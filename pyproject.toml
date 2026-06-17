@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "insect-nav"
+version = "0.1.0"
+description = "Biologically-inspired visual navigation with spiking neural networks (insect mushroom body model)"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+genn = ["pygenn>=5.1.0"]
+dev = ["pytest", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["insect_nav*"]
