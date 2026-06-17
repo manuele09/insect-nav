@@ -5,8 +5,6 @@ import os
 
 import cv2
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-from scipy.spatial.distance import cdist
 
 
 def loadFrame(frame_number: int, frames_dir: str) -> np.ndarray:
@@ -71,26 +69,6 @@ def extractFeatures(frame: np.ndarray, parameters_dict: dict) -> np.ndarray:
 
     return np.concatenate(features) if features else np.array([])
 
-
-def computeNovelty(current_image: np.ndarray, previous_images: list) -> dict:
-    """Return cosine, Pearson, and Euclidean novelty scores vs. a list of stored images."""
-    novelties = {"cosine": 0.0, "pearson": 0.0, "euclidean": 0.0}
-    if not previous_images:
-        return novelties
-
-    cosine_scores = [
-        (1 - cosine_similarity([current_image], [prev])[0][0]) / 2
-        for prev in previous_images
-    ]
-    novelties["cosine"] = float(np.min(cosine_scores))
-
-    correlations = [np.corrcoef(current_image, prev)[0, 1] for prev in previous_images]
-    novelties["pearson"] = float((1 - np.max(correlations)) / 2)
-
-    distances = cdist([current_image], previous_images, metric="euclidean")[0]
-    novelties["euclidean"] = float(distances.min())
-
-    return novelties
 
 
 def saveFrameAsPNG(frame: np.ndarray, output_dir: str = "SavedFrames",

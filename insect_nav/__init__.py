@@ -17,8 +17,8 @@ from insect_nav.infomax import Infomax
 from insect_nav.memory import PerfectMemory
 from insect_nav.logger import NetworkLogger
 from insect_nav.parameters import load_parameters_from_file, save_parameters_to_file
+from insect_nav.metrics import novelty_scores
 from insect_nav.vision import (
-    computeNovelty,
     countFrames,
     cropFrame,
     extractFeatures,
@@ -63,9 +63,10 @@ __all__ = [
     "cropFrame",
     "resizeFrame",
     "shiftFrame",
-    "computeNovelty",
     "saveFrameAsPNG",
     "saveFeaturesAsPNG",
+    # Metrics
+    "novelty_scores",
     # Parameters I/O
     "load_parameters_from_file",
     "save_parameters_to_file",

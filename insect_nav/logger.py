@@ -280,7 +280,8 @@ class NetworkLogger:
         if not self._novelty_data["enabled"]:
             return {}
 
-        from insect_nav.vision import computeNovelty, extractFeatures, preprocessFrame
+        from insect_nav.metrics import novelty_scores
+        from insect_nav.vision import extractFeatures, preprocessFrame
 
         if frame_id is None:
             frame_id = len(self._novelty_data["frames"])
@@ -289,7 +290,7 @@ class NetworkLogger:
             preprocessed_frame = preprocessFrame(frame, 0, self._network.params)
         features = extractFeatures(preprocessed_frame, self._network.params)
 
-        novelties = computeNovelty(features, self._novelty_data["features"])
+        novelties = novelty_scores(features, self._novelty_data["features"])
 
         kc_spike_data = self.get_spikes("kc")
         current_kc_fired = set(kc_spike_data["ids"])

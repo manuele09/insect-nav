@@ -6,7 +6,6 @@ Cosa viene testato, in ordine:
     2. shiftFrame      — shift orizzontale con wrap-around
     3. preprocessFrame — pipeline completa: crop → grayscale+invert → shift → resize
     4. extractFeatures — distribuzione verticale e/o orizzontale
-    5. computeNovelty  — punteggi cosine/pearson/euclidean
 
 Esecuzione:
     python tests/test_vision.py
@@ -24,7 +23,6 @@ from insect_nav.vision import (
     shiftFrame,
     preprocessFrame,
     extractFeatures,
-    computeNovelty,
 )
 from insect_nav.config import NetworkConfig
 
@@ -69,7 +67,7 @@ def fail(msg):
 # ─── 1. cropFrame ─────────────────────────────────────────────────────────────
 
 def test_cropFrame():
-    print("\n[1/5] cropFrame")
+    print("\n[1/4] cropFrame")
     frame = make_gradient_bgr()
 
     # a) dimensioni corrette dopo il crop
@@ -93,7 +91,7 @@ def test_cropFrame():
 # ─── 2. shiftFrame ────────────────────────────────────────────────────────────
 
 def test_shiftFrame():
-    print("\n[2/5] shiftFrame")
+    print("\n[2/4] shiftFrame")
     # shiftFrame lavora su immagini float2D (output di cropFrame+cvtColor)
     img = np.linspace(0, 255, W_IN, dtype=np.float32)
     img = np.tile(img, (H_IN, 1))   # gradiente uniforme per riga
@@ -127,7 +125,7 @@ def test_shiftFrame():
 # ─── 3. preprocessFrame ───────────────────────────────────────────────────────
 
 def test_preprocessFrame():
-    print("\n[3/5] preprocessFrame")
+    print("\n[3/4] preprocessFrame")
     cfg = NetworkConfig(**BASE_CFG)
     frame = make_gradient_bgr()
 
@@ -157,7 +155,7 @@ def test_preprocessFrame():
 # ─── 4. extractFeatures ───────────────────────────────────────────────────────
 
 def test_extractFeatures():
-    print("\n[4/5] extractFeatures")
+    print("\n[4/4] extractFeatures")
     cfg_v  = NetworkConfig(**{**BASE_CFG, "USE_VERTICAL_DIST": True,  "USE_HORIZONTAL_DIST": False})
     cfg_h  = NetworkConfig(**{**BASE_CFG, "USE_VERTICAL_DIST": False, "USE_HORIZONTAL_DIST": True})
     cfg_vh = NetworkConfig(**{**BASE_CFG, "USE_VERTICAL_DIST": True,  "USE_HORIZONTAL_DIST": True})
@@ -188,44 +186,6 @@ def test_extractFeatures():
     ok("il vettore di feature non è costante (std > 0)")
 
 
-# ─── 5. computeNovelty ────────────────────────────────────────────────────────
-
-def test_computeNovelty():
-    print("\n[5/5] computeNovelty")
-
-    cfg = NetworkConfig(**BASE_CFG)
-    frame_a = make_gradient_bgr()
-    frame_b = make_random_bgr(seed=99)
-
-    prep_a = preprocessFrame(frame_a, 0, cfg)
-    prep_b = preprocessFrame(frame_b, 0, cfg)
-
-    feat_a = extractFeatures(prep_a, cfg)
-    feat_b = extractFeatures(prep_b, cfg)
-
-    # a) lista vuota → novelty = 0 (nessun confronto possibile)
-    novelties_empty = computeNovelty(feat_a, [])
-    assert all(v == 0 for v in novelties_empty.values()), novelties_empty
-    ok("lista vuota di riferimenti → novelty = 0 per tutte le metriche")
-
-    # b) confronto con se stesso → novelty minima (cosine≈0, pearson≈0)
-    novelties_self = computeNovelty(feat_a, [feat_a])
-    assert novelties_self["cosine"] < 1e-6
-    assert novelties_self["pearson"] < 1e-6
-    ok(f"confronto con se stesso → cosine={novelties_self['cosine']:.6f}, pearson={novelties_self['pearson']:.6f}")
-
-    # c) due immagini diverse → novelty cosine > 0
-    novelties_diff = computeNovelty(feat_a, [feat_b])
-    assert novelties_diff["cosine"] > 0
-    assert novelties_diff["euclidean"] > 0
-    ok(f"immagini diverse → cosine={novelties_diff['cosine']:.4f}, euclidean={novelties_diff['euclidean']:.2f}")
-
-    # d) la novelty di A rispetto a [A, B] è ≤ novelty di A rispetto a [B] solo
-    #    (perché prendiamo il minimo su tutti i riferimenti)
-    novelties_ab = computeNovelty(feat_a, [feat_a, feat_b])
-    assert novelties_ab["cosine"] <= novelties_diff["cosine"]
-    ok("novelty(A vs [A,B]) ≤ novelty(A vs [B])  — minimo sui riferimenti")
-
 
 # ─── runner ───────────────────────────────────────────────────────────────────
 
@@ -239,7 +199,6 @@ def main():
         test_shiftFrame,
         test_preprocessFrame,
         test_extractFeatures,
-        test_computeNovelty,
     ]
 
     passed, failed = 0, 0
