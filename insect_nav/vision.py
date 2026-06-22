@@ -71,6 +71,42 @@ def extractFeatures(frame: np.ndarray, parameters_dict: dict) -> np.ndarray:
 
 
 
+def visualize_vertical_weighting(
+    preprocessed_frame: np.ndarray,
+    parameters_dict: dict,
+    out_dtype=np.uint8,
+) -> np.ndarray:
+    """
+    Build an image showing the effect of VERTICAL_WEIGHT on each pixel.
+
+    Each pixel is multiplied by (1 + VERTICAL_WEIGHT * h) where h=0 at the
+    bottom row and increases upward. The result is gain-normalised to 255.
+    """
+    if preprocessed_frame is None:
+        raise ValueError("preprocessed_frame is None.")
+    if preprocessed_frame.ndim != 2:
+        raise ValueError(f"Expected 2D grayscale image, got shape {preprocessed_frame.shape}.")
+
+    img = preprocessed_frame.astype(np.float32, copy=False)
+    H = img.shape[0]
+    w = float(parameters_dict.get("VERTICAL_WEIGHT", 0.0))
+
+    h = (H - 1) - np.arange(H, dtype=np.float32)  # h=0 at bottom row
+    weights = (1.0 + w * h)[:, None]               # broadcast over columns
+    weighted = img * weights
+
+    max_val = float(np.max(weighted))
+    if max_val > 0:
+        weighted = weighted * (255.0 / max_val)
+    else:
+        weighted = np.zeros_like(weighted)
+
+    weighted = np.clip(weighted, 0.0, 255.0)
+    if out_dtype is not None:
+        weighted = weighted.astype(out_dtype)
+    return weighted
+
+
 def saveFrameAsPNG(frame: np.ndarray, output_dir: str = "SavedFrames",
                    frame_name: str = "original_frame") -> None:
     os.makedirs(output_dir, exist_ok=True)

@@ -5,13 +5,18 @@ import time
 
 import matplotlib.pyplot as plt
 import numpy as np
+from tqdm import tqdm
 
+from insect_nav.parameters import save_parameters_to_file
 from insect_nav.vision import (
+    countFrames,
     cropFrame,
     extractFeatures,
+    loadFrame,
     preprocessFrame,
     saveFeaturesAsPNG,
     saveFrameAsPNG,
+    visualize_vertical_weighting,
 )
 
 
@@ -66,9 +71,55 @@ class NeuralModelBase:
     def load_weights(self):
         pass
 
+    def train_batch(self, frame_ids=None, plot_novelties=True):
+        network_type = self.params.get("network_type", "").lower()
+        if network_type == "spiking":
+            self.logger.enable_novelty_tracking()
+
+        if frame_ids is None:
+            num_frames = countFrames(self.params["trainingDatasetPath"])
+            train_step = self.params["train_step"]
+            frame_ids = range(0, num_frames, train_step)
+
+        for frame_number in tqdm(frame_ids, desc="Training"):
+            frame = loadFrame(frame_number, frames_dir=self.params["trainingDatasetPath"])
+            self.train(frame)
+
+        self.save_weights()
+        if network_type == "spiking":
+            if plot_novelties:
+                self.logger.plot_cumulative_novelty(self.params["plotsTrainPath"])
+            novelties = self.logger.get_novelties()
+            self.params["activated_kcs"] = novelties["total_unique_kcs"]
+            print(f"Activated KCs: {novelties['total_unique_kcs']} / {self.params.get('NUM_KC', 'N/A')}")
+            save_parameters_to_file(self.params, self.params["parameters_path"])
+
+    def testNavigation_batch(self, frame_ids=None):
+        if frame_ids is None:
+            num_frames = countFrames(self.params["trainingDatasetPath"])
+            train_step = self.params["train_step"]
+            frame_ids = range(0, num_frames, train_step)
+
+        cumulative_error = 0
+        for frame_number in frame_ids:
+            frame = loadFrame(frame_number, frames_dir=self.params["trainingDatasetPath"])
+            r = self.testNavigation(
+                frame,
+                frame_number=frame_number,
+                log_path=self.params["plotsTestPath"],
+                debug_print=False,
+            )
+            angle_rad = r[0] if isinstance(r, tuple) else r
+            cumulative_error += math.degrees(angle_rad)
+            self.plot_test_results(frame_number, self.params["plotsTestPath"])
+
+        cumulative_error /= len(frame_ids)
+        print(f"Cumulative error: {cumulative_error} degrees.")
+        return cumulative_error
+
     # ── Navigation evaluation ────────────────────────────────────────────────
 
-    def testNavigation(self, frame, frame_number=-1, log_path=None, debug_print=True):
+    def testNavigation(self, frame, frame_number=-1, log_path=None, debug_print=True, return_timing=False):
         """
         Scan over angular shifts, find the minimum-novelty heading, and return
         the corresponding turning command in radians.
@@ -93,7 +144,10 @@ class NeuralModelBase:
         if debug_print:
             print(f"Best_Degree: {best_degree:.2f}°, Uncertainty: {uncertainty:.4f}, Time: {elapsed:.3f}s")
 
-        return math.radians(-best_degree)
+        angle_rad = math.radians(-best_degree)
+        if return_timing:
+            return angle_rad, elapsed
+        return angle_rad
 
     # ── Angle selection ──────────────────────────────────────────────────────
 
