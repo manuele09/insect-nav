@@ -16,6 +16,7 @@ from insect_nav.vision import (
     preprocessFrame,
     saveFeaturesAsPNG,
     saveFrameAsPNG,
+    saveVerticalWeightingHeatmap,
     visualize_vertical_weighting,
 )
 
@@ -194,13 +195,21 @@ class NeuralModelBase:
                        frame_name="2_cropped_frame")
 
         preprocessed = preprocessFrame(frame, 0, self.params)
-        preprocessed_resized = cv2.resize(
-            preprocessed,
-            (10 * self.params["WIDTH"], 10 * self.params["HEIGHT"]),
-            interpolation=cv2.INTER_NEAREST,
-        )
+        scale = (10 * self.params["WIDTH"], 10 * self.params["HEIGHT"])
+        preprocessed_resized = cv2.resize(preprocessed, scale, interpolation=cv2.INTER_NEAREST)
         saveFrameAsPNG(preprocessed_resized, output_dir=os.path.join(output_path, f"frame_{frame_number}"),
                        frame_name="3_prepro_frame")
+
+        preprocessed_vertical = visualize_vertical_weighting(preprocessed, self.params)
+        preprocessed_vertical_resized = cv2.resize(preprocessed_vertical, scale, interpolation=cv2.INTER_NEAREST)
+        saveFrameAsPNG(preprocessed_vertical_resized, output_dir=os.path.join(output_path, f"frame_{frame_number}"),
+                       frame_name="4_prepro_vertical")
+        saveVerticalWeightingHeatmap(
+            preprocessed_vertical_resized, self.params,
+            output_dir=os.path.join(output_path, f"frame_{frame_number}"),
+            frame_name=f"5_prepro_vertical_heatmap_{self.params['VERTICAL_WEIGHT']}",
+        )
+
         saveFeaturesAsPNG(preprocessed, self.params,
                           output_dir=os.path.join(output_path, f"frame_{frame_number}"))
 

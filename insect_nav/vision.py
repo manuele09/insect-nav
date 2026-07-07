@@ -113,6 +113,71 @@ def saveFrameAsPNG(frame: np.ndarray, output_dir: str = "SavedFrames",
     cv2.imwrite(os.path.join(output_dir, frame_name + ".png"), frame)
 
 
+def saveVerticalWeightingHeatmap(
+    weighted_frame: np.ndarray,
+    parameters_dict: dict,
+    output_dir: str = "SavedFrames",
+    frame_name: str = "vertical_weighting_heatmap",
+) -> None:
+    """
+    Save a diagnostic heatmap of a vertical-weighted frame (see
+    `visualize_vertical_weighting`): the image itself plus a colorbar and a
+    secondary right-hand axis showing the max intensity of each logical
+    (unresized) pixel row.
+    """
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    heat_data = weighted_frame.astype(np.float32) / 255.0
+    H, W = heat_data.shape
+
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.imshow(heat_data, aspect="auto")
+    ax.set_title(f"Vertical weight = {parameters_dict['VERTICAL_WEIGHT']}", fontsize=10)
+    ax.set_xlabel("x [px]")
+    ax.set_ylabel("y [px]")
+
+    scale_x = W / parameters_dict["WIDTH"]
+    scale_y = H / parameters_dict["HEIGHT"]
+
+    x_ticks = np.linspace(0, W, 20)
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels([f"{int(x / scale_x)}" for x in x_ticks])
+
+    y_ticks = np.linspace(0, H, 8)
+    ax.set_yticks(y_ticks)
+    ax.set_yticklabels([f"{int(parameters_dict['HEIGHT'] - (y / scale_y))}" for y in y_ticks])
+
+    # Secondary Y axis: max intensity per logical (unresized) row
+    ax2 = ax.twinx()
+    ax2.set_ylim(ax.get_ylim())
+
+    logical_H = parameters_dict["HEIGHT"]
+    block_h = H / logical_H
+    y_centers = (np.arange(logical_H) + 0.5) * block_h
+
+    block_max = np.zeros(logical_H, dtype=np.float32)
+    for i in range(logical_H):
+        y0 = int(np.floor(i * block_h))
+        y1 = max(int(np.floor((i + 1) * block_h)), y0 + 1)
+        block_max[i] = heat_data[y0:y1, :].max()
+
+    ax2.set_yticks(y_centers)
+    ax2.set_yticklabels([f"{v:.1f}" for v in block_max])
+    ax2.set_ylabel("Row-wise max")
+
+    norm = mcolors.Normalize(vmin=0, vmax=1)
+    mappable = cm.ScalarMappable(norm=norm)
+    cbar = fig.colorbar(mappable, ax=ax, fraction=0.04, pad=0.18)
+    cbar.set_label("Intensity")
+
+    fig.savefig(os.path.join(output_dir, f"{frame_name}.png"), dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
 def saveFeaturesAsPNG(frame: np.ndarray, parameters_dict: dict,
                       output_dir: str = "SavedFeatures") -> None:
     os.makedirs(output_dir, exist_ok=True)
