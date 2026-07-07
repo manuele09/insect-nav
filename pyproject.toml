@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "insect-nav"
-version = "0.1.0"
+version = "0.2.0"
 description = "Biologically-inspired visual navigation with spiking neural networks (insect mushroom body model)"
 requires-python = ">=3.8"
 dependencies = [
@@ -14,6 +14,7 @@ dependencies = [
     "scikit-learn",
     "matplotlib",
     "tqdm",
+    "pandas",
 ]
 
 [project.optional-dependencies]
