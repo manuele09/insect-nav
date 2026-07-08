@@ -264,6 +264,7 @@ def test_one_variant(
     parameters_path: Path,
     debug_mode: bool = True,
     parallel_navigation: bool = False,
+    frame_ids: Optional[List[int]] = None,
 ) -> None:
     """
     Test a single network variant using its configuration file.
@@ -271,15 +272,22 @@ def test_one_variant(
     Loads network parameters, detects the network type, iterates through
     test frames performing navigation tests, and computes the mean
     absolute angular deviation (degrees).
+
+    Args:
+        frame_ids: Explicit list of frame indices to test on. If None
+            (default), falls back to the pre-existing behavior of stepping
+            through the whole dataset with parameters["train_step"].
     """
     parameters = load_parameters_from_file(parameters_path)
     num_frames = countFrames(parameters["trainingDatasetPath"])
 
-    # Backward compatibility for naming
-    test_step = parameters.get("train_step")
-    if not test_step:
-        print(f"'{parameters_path}': train_step mancante nel parameters.json, variante saltata.")
-        return
+    if frame_ids is None:
+        # Backward compatibility for naming
+        test_step = parameters.get("train_step")
+        if not test_step:
+            print(f"'{parameters_path}': train_step mancante nel parameters.json, variante saltata.")
+            return
+        frame_ids = range(0, num_frames, test_step)
 
     network_type = parameters["network_type"].lower()
 
@@ -300,11 +308,11 @@ def test_one_variant(
             print(f"Unknown network type: {parameters['network_type']} in {parameters_path}")
             return
 
-    print(f"\nTesting: {parameters_path}  |  Frames: {num_frames}  |  Step: {test_step}")
+    print(f"\nTesting: {parameters_path}  |  Frames: {num_frames}  |  Tested: {len(frame_ids)}")
 
     degrees_logged = []
 
-    bar = tqdm(range(0, num_frames, test_step), unit="frame")
+    bar = tqdm(frame_ids, unit="frame")
     for frame_number in bar:
         frame = loadFrame(frame_number, frames_dir=parameters["trainingDatasetPath"])
         d = nn.testNavigation(frame, frame_number=frame_number, log_path=parameters["plotsTestPath"], debug_print=False)
@@ -321,6 +329,23 @@ def test_one_variant(
         print(f"Mean |degree| for {parameters['name']}: {mean_abs_degree:.2f} deg")
     else:
         print(f"No degrees logged for {parameters['name']}.")
+
+    frame_ids_list = list(frame_ids)
+    summary = {
+        "name": parameters.get("name"),
+        "num_frames_total": num_frames,
+        "num_frames_tested": len(frame_ids_list),
+        "mean_abs_angular_error_deg": mean_abs_degree if degrees_logged else None,
+        "frames": [
+            {"frame_id": frame_id, "abs_angular_error_deg": degree}
+            for frame_id, degree in zip(frame_ids_list, degrees_logged)
+        ],
+    }
+    os.makedirs(parameters["plotsTestPath"], exist_ok=True)
+    summary_path = os.path.join(parameters["plotsTestPath"], "test_summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"Test summary saved to {summary_path}")
 
     if NeuralNetwork is not None and isinstance(nn, NeuralNetwork):
         nn.model.unload()
