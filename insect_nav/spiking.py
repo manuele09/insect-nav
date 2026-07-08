@@ -102,6 +102,41 @@ class NeuralNetwork(NeuralModelBase):
             )
             print("KC→MBON weights saved.")
 
+    def analyze_kc_mbon_connectivity(self) -> dict:
+        """
+        Inspect the KC→MBON weights currently on the device and determine
+        whether they still reflect the untrained uniform initialization
+        (KC_MBON_WEIGHT for every synapse) or have been modified by training.
+
+        Call after the network has been built (e.g. right after __init__, or
+        after load_weights()/_build_network()) — kc_mbon_g_*.npy is written
+        with the uniform initial value both by a fresh (never-trained) build
+        and by create_variants' random-connectivity-seed regeneration, so its
+        mere existence on disk does not imply training actually happened;
+        pulling the live weights and comparing them against KC_MBON_WEIGHT
+        does.
+
+        Returns a dict with min/max/mean/std of the weights, the fraction of
+        synapses still exactly at the initial value, and a summary
+        "is_trained" bool (True iff at least one weight differs from the
+        initial value).
+        """
+        self.kc_mbon.vars["g"].pull_from_device()
+        weights = self.kc_mbon.vars["g"].values
+        initial_weight = self.params["KC_MBON_WEIGHT"]
+
+        fraction_unchanged = float(np.mean(np.isclose(weights, initial_weight)))
+
+        return {
+            "min": float(weights.min()),
+            "max": float(weights.max()),
+            "mean": float(weights.mean()),
+            "std": float(weights.std()),
+            "initial_weight": float(initial_weight),
+            "fraction_unchanged": fraction_unchanged,
+            "is_trained": fraction_unchanged < 1.0,
+        }
+
     def _generate_pn_kc_connectivity(self, num_pn: int, num_kc: int, fan_in: int):
         """
         Deterministic PN→KC connectivity using numpy RNG (seed-based).
