@@ -8,6 +8,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
+from insect_nav.plot_style import apply_style, save_figure, COLORS, SEQUENTIAL_CMAP
+
+apply_style()
+
 
 class PCAPlotter:
     """Class for generating PCA-related plots."""
@@ -86,7 +90,7 @@ class PCAPlotter:
 
         # Plot all points colored by error
         scatter = ax.scatter(X_pca[:, 0], X_pca[:, 1], c=error_normalized,
-                           cmap='viridis', s=50, alpha=0.6, edgecolors='black',
+                           cmap=SEQUENTIAL_CMAP, s=50, alpha=0.6, edgecolors='black',
                            linewidth=0.5)
 
         # Add colorbar
@@ -107,8 +111,8 @@ class PCAPlotter:
 
         # Save the plot
         plot_path = self.pca_output_path / "all_individuals_2d.png"
-        fig.savefig(plot_path, dpi=300)
-        plt.close()
+        save_figure(fig, plot_path)
+        plt.close(fig)
 
         print(f"Plot saved to {plot_path}")
 
@@ -138,7 +142,7 @@ class PCAPlotter:
 
             # Plot all points colored by error
             scatter = ax.scatter(X_pca[:, 0], X_pca[:, 1], X_pca[:, 2],
-                               c=error_normalized, cmap='viridis', s=50, alpha=0.6,
+                               c=error_normalized, cmap=SEQUENTIAL_CMAP, s=50, alpha=0.6,
                                edgecolors='black', linewidth=0.5)
 
             # Add colorbar
@@ -164,14 +168,66 @@ class PCAPlotter:
 
             # Save the plot
             plot_path = self.pca_output_path / "all_individuals_3d.png"
-            fig.savefig(plot_path, dpi=300)
-            plt.close()
+            save_figure(fig, plot_path)
+            plt.close(fig)
 
             print(f"Plot saved to {plot_path}")
 
         except (ImportError, ModuleNotFoundError) as e:
             print(f"Warning: Could not generate 3D PCA plot due to matplotlib version conflict: {e}")
             print("Skipping 3D PCA all individuals plot. The 2D version is available.")
+
+    def _plot_loadings(self, n_components, filename, suptitle, figsize):
+        """
+        Shared helper for plot_loadings_2d/plot_loadings_3d.
+
+        Draws one bar subplot per principal component (loading of each
+        imposed parameter on that component) and saves the figure.
+
+        Args:
+            n_components (int): Number of components (subplots) to draw.
+            filename (str): Output filename (relative to pca_output_path).
+            suptitle (str): Figure-level title.
+            figsize (tuple): Figure size, matching the original per-variant size.
+        """
+        X_scaled, X_pca, pca, available_params = self._prepare_pca_data(n_components=n_components)
+
+        if pca is None:
+            print(f"Warning: No data available for PCA {n_components}D loadings")
+            return
+
+        # Get loadings (components)
+        loadings = pca.components_.T
+
+        # Create figure with one subplot per component
+        fig, axes = plt.subplots(1, n_components, figsize=figsize)
+        if n_components == 1:
+            axes = [axes]
+
+        # Colors for bars (sampled from the sequential colormap, same spacing
+        # as the original hand-picked values for 2/3 components)
+        colors = plt.cm.viridis(np.linspace(0.2, 0.8, n_components))
+
+        for i, ax in enumerate(axes):
+            ax.bar(range(len(available_params)), loadings[:, i], color=colors[i], alpha=0.7,
+                   edgecolor='black', linewidth=1.5)
+            ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
+            ax.set_xticks(range(len(available_params)))
+            ax.set_xticklabels(available_params, rotation=45, ha='right', fontsize=10)
+            ax.set_ylabel("Loading Value", fontsize=11)
+            ax.set_title(f"PC{i+1} Loadings ({pca.explained_variance_ratio_[i]*100:.1f}% variance)",
+                        fontsize=12, fontweight="bold")
+            ax.grid(True, axis='y', alpha=0.3)
+
+        fig.suptitle(suptitle, fontsize=14, fontweight="bold", y=1.02)
+        fig.tight_layout()
+
+        # Save the plot
+        plot_path = self.pca_output_path / filename
+        save_figure(fig, plot_path)
+        plt.close(fig)
+
+        print(f"Plot saved to {plot_path}")
 
     def plot_loadings_2d(self):
         """
@@ -180,54 +236,7 @@ class PCAPlotter:
         Shows how each imposed parameter contributes to PC1 and PC2 using bar plots.
         Saves the plot as 'loadings_2d.png'.
         """
-        X_scaled, X_pca, pca, available_params = self._prepare_pca_data(n_components=2)
-
-        if pca is None:
-            print("Warning: No data available for PCA 2D loadings")
-            return
-
-        # Get loadings (components)
-        loadings = pca.components_.T
-
-        # Create figure with 2 subplots (one for PC1, one for PC2)
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-        # Colors for bars
-        colors = plt.cm.viridis([0.2, 0.8])
-
-        # Plot PC1 loadings
-        ax = axes[0]
-        ax.bar(range(len(available_params)), loadings[:, 0], color=colors[0], alpha=0.7,
-               edgecolor='black', linewidth=1.5)
-        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
-        ax.set_xticks(range(len(available_params)))
-        ax.set_xticklabels(available_params, rotation=45, ha='right', fontsize=10)
-        ax.set_ylabel("Loading Value", fontsize=11)
-        ax.set_title(f"PC1 Loadings ({pca.explained_variance_ratio_[0]*100:.1f}% variance)",
-                    fontsize=12, fontweight="bold")
-        ax.grid(True, axis='y', alpha=0.3)
-
-        # Plot PC2 loadings
-        ax = axes[1]
-        ax.bar(range(len(available_params)), loadings[:, 1], color=colors[1], alpha=0.7,
-               edgecolor='black', linewidth=1.5)
-        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
-        ax.set_xticks(range(len(available_params)))
-        ax.set_xticklabels(available_params, rotation=45, ha='right', fontsize=10)
-        ax.set_ylabel("Loading Value", fontsize=11)
-        ax.set_title(f"PC2 Loadings ({pca.explained_variance_ratio_[1]*100:.1f}% variance)",
-                    fontsize=12, fontweight="bold")
-        ax.grid(True, axis='y', alpha=0.3)
-
-        fig.suptitle("PCA Feature Importance - 2D", fontsize=14, fontweight="bold", y=1.02)
-        fig.tight_layout()
-
-        # Save the plot
-        plot_path = self.pca_output_path / "loadings_2d.png"
-        fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
-
-        print(f"Plot saved to {plot_path}")
+        self._plot_loadings(2, "loadings_2d.png", "PCA Feature Importance - 2D", figsize=(14, 5))
 
     def plot_loadings_3d(self):
         """
@@ -236,66 +245,7 @@ class PCAPlotter:
         Shows how each imposed parameter contributes to PC1, PC2, and PC3 using bar plots.
         Saves the plot as 'loadings_3d.png'.
         """
-        X_scaled, X_pca, pca, available_params = self._prepare_pca_data(n_components=3)
-
-        if pca is None:
-            print("Warning: No data available for PCA 3D loadings")
-            return
-
-        # Get loadings (components)
-        loadings = pca.components_.T
-
-        # Create figure with 3 subplots (one for PC1, PC2, PC3)
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-
-        # Colors for bars
-        colors = plt.cm.viridis([0.2, 0.5, 0.8])
-
-        # Plot PC1 loadings
-        ax = axes[0]
-        ax.bar(range(len(available_params)), loadings[:, 0], color=colors[0], alpha=0.7,
-               edgecolor='black', linewidth=1.5)
-        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
-        ax.set_xticks(range(len(available_params)))
-        ax.set_xticklabels(available_params, rotation=45, ha='right', fontsize=10)
-        ax.set_ylabel("Loading Value", fontsize=11)
-        ax.set_title(f"PC1 Loadings ({pca.explained_variance_ratio_[0]*100:.1f}% variance)",
-                    fontsize=12, fontweight="bold")
-        ax.grid(True, axis='y', alpha=0.3)
-
-        # Plot PC2 loadings
-        ax = axes[1]
-        ax.bar(range(len(available_params)), loadings[:, 1], color=colors[1], alpha=0.7,
-               edgecolor='black', linewidth=1.5)
-        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
-        ax.set_xticks(range(len(available_params)))
-        ax.set_xticklabels(available_params, rotation=45, ha='right', fontsize=10)
-        ax.set_ylabel("Loading Value", fontsize=11)
-        ax.set_title(f"PC2 Loadings ({pca.explained_variance_ratio_[1]*100:.1f}% variance)",
-                    fontsize=12, fontweight="bold")
-        ax.grid(True, axis='y', alpha=0.3)
-
-        # Plot PC3 loadings
-        ax = axes[2]
-        ax.bar(range(len(available_params)), loadings[:, 2], color=colors[2], alpha=0.7,
-               edgecolor='black', linewidth=1.5)
-        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
-        ax.set_xticks(range(len(available_params)))
-        ax.set_xticklabels(available_params, rotation=45, ha='right', fontsize=10)
-        ax.set_ylabel("Loading Value", fontsize=11)
-        ax.set_title(f"PC3 Loadings ({pca.explained_variance_ratio_[2]*100:.1f}% variance)",
-                    fontsize=12, fontweight="bold")
-        ax.grid(True, axis='y', alpha=0.3)
-
-        fig.suptitle("PCA Feature Importance - 3D", fontsize=14, fontweight="bold", y=1.02)
-        fig.tight_layout()
-
-        # Save the plot
-        plot_path = self.pca_output_path / "loadings_3d.png"
-        fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
-
-        print(f"Plot saved to {plot_path}")
+        self._plot_loadings(3, "loadings_3d.png", "PCA Feature Importance - 3D", figsize=(18, 5))
 
     def plot_scree(self):
         """
@@ -328,7 +278,7 @@ class PCAPlotter:
 
         # Plot bar chart for individual variance
         pc_labels = [f"PC{i+1}" for i in range(n_components)]
-        bars = ax.bar(pc_labels, explained_var, alpha=0.7, color='steelblue',
+        bars = ax.bar(pc_labels, explained_var, alpha=0.7, color=COLORS["secondary"],
                       edgecolor='black', linewidth=1.5, label='Individual Variance')
 
         # Add percentage labels on bars
@@ -340,16 +290,16 @@ class PCAPlotter:
 
         # Plot cumulative variance on secondary axis
         ax2 = ax.twinx()
-        line = ax2.plot(pc_labels, cumulative_var, color='red', marker='o',
+        line = ax2.plot(pc_labels, cumulative_var, color=COLORS["tertiary"], marker='o',
                        linewidth=2.5, markersize=8, label='Cumulative Variance')
-        ax2.set_ylabel("Cumulative Explained Variance", fontsize=12, color='red')
-        ax2.tick_params(axis='y', labelcolor='red')
+        ax2.set_ylabel("Cumulative Explained Variance", fontsize=12, color=COLORS["tertiary"])
+        ax2.tick_params(axis='y', labelcolor=COLORS["tertiary"])
         ax2.set_ylim([0, 1.05])
 
         # Add percentage labels on cumulative line
         for i, (label, cum_var) in enumerate(zip(pc_labels, cumulative_var)):
             ax2.text(i, cum_var + 0.02, f'{cum_var*100:.1f}%',
-                    ha='center', va='bottom', fontsize=8, color='red', fontweight='bold')
+                    ha='center', va='bottom', fontsize=8, color=COLORS["tertiary"], fontweight='bold')
 
         # Labels and title
         ax.set_xlabel("Principal Components", fontsize=12)
@@ -367,8 +317,8 @@ class PCAPlotter:
 
         # Save the plot
         plot_path = self.pca_output_path / "scree.png"
-        fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
+        save_figure(fig, plot_path)
+        plt.close(fig)
 
         print(f"Plot saved to {plot_path}")
 
@@ -415,7 +365,7 @@ class PCAPlotter:
                 # Create scatter plot colored by error
                 scatter = ax.scatter(X_pca[:, i], X_pca[:, j],
                                    c=error_normalized,
-                                   cmap='viridis', s=50, alpha=0.6,
+                                   cmap=SEQUENTIAL_CMAP, s=50, alpha=0.6,
                                    edgecolors='black', linewidth=0.5)
 
                 # Add colorbar
@@ -436,10 +386,80 @@ class PCAPlotter:
                 # Save the plot
                 plot_filename = f"component_pair_{pc_labels[i]}_vs_{pc_labels[j]}.png"
                 plot_path = scatter_path / plot_filename
-                fig.savefig(plot_path, dpi=300)
-                plt.close()
+                save_figure(fig, plot_path)
+                plt.close(fig)
 
                 print(f"Plot saved to {plot_path}")
+
+    def _plot_signed_bar_chart(self, pc_labels, values, filename, title, ylabel,
+                                value_fmt, legend_labels, ylim=None):
+        """
+        Shared helper for plot_components_error_correlation/plot_regression_coefficients.
+
+        Draws a bar chart where bars are colored by sign (positive/negative)
+        using the reference/actual color pair, with the numeric value printed
+        above each bar and a two-entry legend explaining the sign coding.
+
+        Args:
+            pc_labels (list): X-axis tick labels (one per bar).
+            values (array-like): Bar heights (signed values).
+            filename (str): Output filename (relative to pca_output_path).
+            title (str): Axes title.
+            ylabel (str): Y-axis label.
+            value_fmt (str): Format string for the value label above each bar
+                              (e.g. '{:.3f}').
+            legend_labels (tuple): (negative_label, positive_label).
+            ylim (tuple, optional): Explicit y-axis limits.
+
+        Returns:
+            Path: Path the plot was saved to.
+        """
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        # Positive values -> reference color, negative values -> actual color
+        # (colorblind-safe pair, guide §8.3).
+        colors = [COLORS["actual"] if v < 0 else COLORS["reference"] for v in values]
+
+        # Plot bar chart
+        bars = ax.bar(pc_labels, values, color=colors, alpha=0.7,
+                      edgecolor='black', linewidth=1.5)
+
+        # Add value labels on bars
+        for bar, v in zip(bars, values):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   value_fmt.format(v),
+                   ha='center', va='bottom' if v > 0 else 'top',
+                   fontsize=9, fontweight='bold')
+
+        # Add horizontal line at y=0
+        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
+
+        # Labels and title
+        ax.set_xlabel("Principal Components", fontsize=12)
+        ax.set_ylabel(ylabel, fontsize=12)
+        ax.set_title(title, fontsize=14, fontweight="bold")
+        ax.grid(True, axis='y', alpha=0.3)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+
+        # Add legend
+        from matplotlib.patches import Patch
+        negative_label, positive_label = legend_labels
+        legend_elements = [
+            Patch(facecolor=COLORS["actual"], alpha=0.7, edgecolor='black', label=negative_label),
+            Patch(facecolor=COLORS["reference"], alpha=0.7, edgecolor='black', label=positive_label)
+        ]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=11)
+
+        fig.tight_layout()
+
+        # Save the plot
+        plot_path = self.pca_output_path / filename
+        save_figure(fig, plot_path)
+        plt.close(fig)
+
+        return plot_path
 
     def plot_components_error_correlation(self):
         """
@@ -475,52 +495,18 @@ class PCAPlotter:
             corr = np.corrcoef(X_pca[:, i], errors)[0, 1]
             correlations.append(corr)
 
-        # Create the plot
-        fig, ax = plt.subplots(figsize=(12, 6))
-
         # Create PC labels
         pc_labels = [f"PC{i+1}" for i in range(n_components)]
 
-        # Create color map: blue for negative, red for positive
-        colors = ['#1f77b4' if corr < 0 else '#d62728' for corr in correlations]
-
-        # Plot bar chart
-        bars = ax.bar(pc_labels, correlations, color=colors, alpha=0.7,
-                      edgecolor='black', linewidth=1.5)
-
-        # Add correlation value labels on bars
-        for bar, corr in zip(bars, correlations):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{corr:.3f}',
-                   ha='center', va='bottom' if corr > 0 else 'top',
-                   fontsize=9, fontweight='bold')
-
-        # Add horizontal line at y=0
-        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
-
-        # Labels and title
-        ax.set_xlabel("Principal Components", fontsize=12)
-        ax.set_ylabel("Pearson Correlation Coefficient", fontsize=12)
-        ax.set_title("Correlation between Principal Components and Error",
-                    fontsize=14, fontweight="bold")
-        ax.grid(True, axis='y', alpha=0.3)
-        ax.set_ylim([min(correlations) - 0.15, max(correlations) + 0.15])
-
-        # Add legend
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor='#1f77b4', alpha=0.7, edgecolor='black', label='Negative Correlation'),
-            Patch(facecolor='#d62728', alpha=0.7, edgecolor='black', label='Positive Correlation')
-        ]
-        ax.legend(handles=legend_elements, loc='upper right', fontsize=11)
-
-        fig.tight_layout()
-
-        # Save the plot
-        plot_path = self.pca_output_path / "components_error_correlation.png"
-        fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
+        plot_path = self._plot_signed_bar_chart(
+            pc_labels, correlations,
+            filename="components_error_correlation.png",
+            title="Correlation between Principal Components and Error",
+            ylabel="Pearson Correlation Coefficient",
+            value_fmt="{:.3f}",
+            legend_labels=("Negative Correlation", "Positive Correlation"),
+            ylim=(min(correlations) - 0.15, max(correlations) + 0.15),
+        )
 
         print(f"Plot saved to {plot_path}")
 
@@ -566,12 +552,13 @@ class PCAPlotter:
 
         # Scatter plot of actual vs predicted
         scatter = ax.scatter(y_actual, y_predicted, alpha=0.6, s=50,
-                           edgecolors='black', linewidth=0.5)
+                           color=COLORS["actual"], edgecolors='black', linewidth=0.5)
 
-        # Regression line (perfect prediction)
+        # Identity line (perfect prediction) — auxiliary reference, recessive style.
         min_val = min(y_actual.min(), y_predicted.min())
         max_val = max(y_actual.max(), y_predicted.max())
-        ax.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect Prediction')
+        ax.plot([min_val, max_val], [min_val, max_val], color=COLORS["mean_reference"],
+                linestyle='--', linewidth=2, label='Perfect Prediction')
 
         # Labels and title
         ax.set_xlabel("Actual MAE", fontsize=12)
@@ -588,8 +575,8 @@ class PCAPlotter:
 
         # Save the plot
         plot_path = self.pca_output_path / "mae_prediction.png"
-        fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
+        save_figure(fig, plot_path)
+        plt.close(fig)
 
         print(f"Plot saved to {plot_path}")
         print(f"  - R² Score: {r2:.4f}")
@@ -629,51 +616,17 @@ class PCAPlotter:
         coefficients = model.coef_
         intercept = model.intercept_
 
-        # Create the plot
-        fig, ax = plt.subplots(figsize=(12, 6))
-
         # Create PC labels
         pc_labels = [f"PC{i+1}" for i in range(n_components)]
 
-        # Create color map: blue for negative, red for positive
-        colors = ['#1f77b4' if coef < 0 else '#d62728' for coef in coefficients]
-
-        # Plot bar chart
-        bars = ax.bar(pc_labels, coefficients, color=colors, alpha=0.7,
-                      edgecolor='black', linewidth=1.5)
-
-        # Add coefficient value labels on bars
-        for bar, coef in zip(bars, coefficients):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{coef:.4f}',
-                   ha='center', va='bottom' if coef > 0 else 'top',
-                   fontsize=9, fontweight='bold')
-
-        # Add horizontal line at y=0
-        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
-
-        # Labels and title
-        ax.set_xlabel("Principal Components", fontsize=12)
-        ax.set_ylabel("Regression Coefficient", fontsize=12)
-        ax.set_title(f"Linear Regression Coefficients for MAE Prediction (Intercept: {intercept:.4f})",
-                    fontsize=14, fontweight="bold")
-        ax.grid(True, axis='y', alpha=0.3)
-
-        # Add legend
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor='#1f77b4', alpha=0.7, edgecolor='black', label='Negative Coefficient'),
-            Patch(facecolor='#d62728', alpha=0.7, edgecolor='black', label='Positive Coefficient')
-        ]
-        ax.legend(handles=legend_elements, loc='upper right', fontsize=11)
-
-        fig.tight_layout()
-
-        # Save the plot
-        plot_path = self.pca_output_path / "regression_coefficients.png"
-        fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
+        plot_path = self._plot_signed_bar_chart(
+            pc_labels, coefficients,
+            filename="regression_coefficients.png",
+            title=f"Linear Regression Coefficients for MAE Prediction (Intercept: {intercept:.4f})",
+            ylabel="Regression Coefficient",
+            value_fmt="{:.4f}",
+            legend_labels=("Negative Coefficient", "Positive Coefficient"),
+        )
 
         print(f"Plot saved to {plot_path}")
         print(f"  - Intercept: {intercept:.4f}")

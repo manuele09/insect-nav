@@ -129,14 +129,18 @@ def saveVerticalWeightingHeatmap(
     import matplotlib.colors as mcolors
     import matplotlib.pyplot as plt
 
+    from insect_nav.plot_style import SEQUENTIAL_CMAP, apply_style, new_figure, save_figure
+
+    apply_style()
+
     os.makedirs(output_dir, exist_ok=True)
 
     heat_data = weighted_frame.astype(np.float32) / 255.0
     H, W = heat_data.shape
 
-    fig, ax = plt.subplots(figsize=(8, 3))
-    ax.imshow(heat_data, aspect="auto")
-    ax.set_title(f"Vertical weight = {parameters_dict['VERTICAL_WEIGHT']}", fontsize=10)
+    fig, ax = new_figure("heatmap")
+    ax.imshow(heat_data, aspect="auto", cmap=SEQUENTIAL_CMAP)
+    ax.set_title(f"Vertical weight = {parameters_dict['VERTICAL_WEIGHT']}")
     ax.set_xlabel("x [px]")
     ax.set_ylabel("y [px]")
 
@@ -170,11 +174,11 @@ def saveVerticalWeightingHeatmap(
     ax2.set_ylabel("Row-wise max")
 
     norm = mcolors.Normalize(vmin=0, vmax=1)
-    mappable = cm.ScalarMappable(norm=norm)
+    mappable = cm.ScalarMappable(norm=norm, cmap=SEQUENTIAL_CMAP)
     cbar = fig.colorbar(mappable, ax=ax, fraction=0.04, pad=0.18)
     cbar.set_label("Intensity")
 
-    fig.savefig(os.path.join(output_dir, f"{frame_name}.png"), dpi=200, bbox_inches="tight")
+    save_figure(fig, os.path.join(output_dir, frame_name))
     plt.close(fig)
 
 

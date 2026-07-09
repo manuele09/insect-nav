@@ -1,7 +1,6 @@
 import multiprocessing as mp
 import os, time, math, atexit, signal
 import numpy as np
-import matplotlib.pyplot as plt
 
 from insect_nav import NeuralNetwork
 from insect_nav import NeuralModelBase
@@ -163,6 +162,7 @@ class ParallelNavigator(NeuralModelBase):
 
         # Determine best navigation direction
         best_degree, uncertainty = self.find_optimal_degree()
+        self.last_best_degree = best_degree
         elapsed_time = time.time() - start_time
 
         # Optional logging

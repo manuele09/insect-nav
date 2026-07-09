@@ -10,9 +10,12 @@ from insect_nav.infomax import Infomax
 from insect_nav import NeuralNetwork
 from insect_nav.parameters import load_parameters_from_file, save_parameters_to_file
 from insect_nav.vision import *
+from insect_nav.plot_style import apply_style, new_figure, save_figure, style_axes, COLORS
 from scipy.optimize import differential_evolution, minimize
 import pandas as pd
 from time import time
+
+apply_style()
 lock = Lock()
 
 class Tuner:
@@ -346,19 +349,14 @@ class Tuner:
             if not errors:
                 return
 
-            plt.figure(figsize=(8, 5))
-            plt.plot(errors, marker="o", linestyle="-", alpha=0.8)
+            fig, ax = new_figure("error_vs_x")
+            ax.plot(errors, marker="o", linestyle="-", alpha=0.8, color=COLORS["actual"])
 
-            plt.xlabel("Generations")
-            plt.ylabel("Error")
-            plt.title("Error best individual")
-            plt.grid(True)
-            plt.legend()
-            plt.tight_layout()
+            style_axes(ax, xlabel="Generations", ylabel="Error", title="Error best individual")
 
             plot_path = self.plot_path
-            plt.savefig(plot_path)
-            plt.close()
+            save_figure(fig, plot_path)
+            plt.close(fig)
 
     def polish(self):
         df = pd.read_csv(self.best_individual_path)

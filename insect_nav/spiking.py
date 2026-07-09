@@ -11,7 +11,6 @@ import shutil
 import time
 
 import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
@@ -55,14 +54,26 @@ class NeuralNetwork(NeuralModelBase):
     """
 
     def __init__(self, parameters, load_net=None, reducedNetwork=False,
-                 num_shifts=None, tuneCurrent=False, connectivity_seed=-1, use_gpu=False):
+                 num_shifts=None, tuneCurrent=False, connectivity_seed=-1, use_gpu=False,
+                 batch_size=1, precompute_features=False):
         if load_net is None:
             load_net = {"pn_kc": False, "kc_mbon": False}
+
+        if batch_size > 1 and not use_gpu:
+            # GeNN's single_threaded_cpu backend hard-rejects batch_size>1 at
+            # model.load() time ("only supports simulations with a batch
+            # size of 1") -- fail fast with a clear message instead of
+            # letting that generic RuntimeError surface after a build.
+            raise ValueError("batch_size > 1 requires use_gpu=True (GeNN's single_threaded_cpu backend only supports batch_size=1)")
 
         self.NMBON = 1
         self.reducedNetwork = reducedNetwork
         self.connectivity_seed = connectivity_seed
         self.use_gpu = use_gpu
+        self.batch_size = batch_size
+        self.precompute_features = precompute_features
+        self._feature_cache = None
+        self._cached_shift_degrees = None
 
         self.loaded_weights = {
             "pn_kc": None,
@@ -81,6 +92,8 @@ class NeuralNetwork(NeuralModelBase):
         self._build_network()
         if tuneCurrent:
             self.tuneInputCurrent()
+        if self.precompute_features:
+            self._build_feature_cache()
 
     # ── Weight persistence ───────────────────────────────────────────────────
 
@@ -192,6 +205,10 @@ class NeuralNetwork(NeuralModelBase):
         self.model = GeNNModel("float", self.params["name"], backend=backend)
         self.model.dt = self.params["DT"]
         self.model.seed = 1
+        # Must be set before any add_neuron_population/build() call. Verified
+        # empirically (see plan) that batch_size=1 is bit-identical to never
+        # setting it at all, on both single_threaded_cpu and cuda backends.
+        self.model.batch_size = self.batch_size
 
         self.pn = self.model.add_neuron_population(
             "pn", self.input_neurons, "LIF",
@@ -266,10 +283,23 @@ class NeuralNetwork(NeuralModelBase):
         self.synapse_populations_names = ["pn_kc", "kc_apln", "apln_kc"]
 
         if not self.reducedNetwork:
+            kc_mbon_g_init = self.loaded_weights["kc_mbon"][0]
+            if self.batch_size > 1 and np.ndim(kc_mbon_g_init) > 0:
+                # anti_hebbian's "g" var is READ_WRITE (default access mode
+                # for a plain ("g", "scalar") var, see genn_models.py), which
+                # GeNN auto-duplicates across the batch dimension as soon as
+                # model.batch_size > 1 -- an already-loaded 1D trained-weight
+                # array must be tiled to (batch_size, NUM_KC) or GeNN rejects
+                # it as under-shaped (a plain scalar initial value needs no
+                # tiling: GeNN broadcasts scalars to any shape natively).
+                # Every lane starts identical; train() refuses batch_size>1
+                # (see below), so they stay identical for the network's
+                # lifetime -- there is no plasticity to make them diverge.
+                kc_mbon_g_init = np.tile(np.asarray(kc_mbon_g_init), (self.batch_size, 1))
             self.kc_mbon = self.model.add_synapse_population(
                 "kc_mbon", "SPARSE", self.kc, self.mbon,
                 init_weight_update(anti_hebbian, self.params["KC_MBON_PARAMS"],
-                                   {"g": self.loaded_weights["kc_mbon"][0]}),
+                                   {"g": kc_mbon_g_init}),
                 init_postsynaptic("ExpCurr", {"tau": self.params["KC_MBON_TAU"]}),
             )
             self.kc_mbon.set_wu_param_dynamic("mod", True)
@@ -370,42 +400,164 @@ class NeuralNetwork(NeuralModelBase):
 
     # ── Simulation ───────────────────────────────────────────────────────────
 
+    def _features_from(self, item):
+        """
+        item is either an already-preprocessed image (2D array, needs
+        extractFeatures), an already-extracted feature vector (1D array,
+        e.g. from the precompute_features cache -- used as-is), or None
+        (zero input).
+        """
+        if item is None:
+            return 0
+        arr = np.asarray(item)
+        return arr if arr.ndim == 1 else extractFeatures(arr, self.params)
+
     def simulate(self, preprocessed_frame, present_time_ms: float, plasticity: bool = False):
         """
-        Run the network for one stimulus presentation.
+        Run the network for one stimulus presentation (batch_size == 1), or
+        for up to batch_size presentations at once (batch_size > 1).
 
         Args:
-            preprocessed_frame: Already-preprocessed image (from preprocessFrame),
-                or None to disable PN input.
+            preprocessed_frame: Already-preprocessed image (from
+                preprocessFrame), a feature vector, None to disable PN input,
+                or -- only when batch_size > 1 -- a list of up to batch_size
+                such items (one per batch lane; missing lanes are zeroed).
             present_time_ms: Stimulus duration in milliseconds.
             plasticity: Whether to enable KC→MBON weight modification.
+                Requires batch_size == 1 (see train()) -- plasticity across
+                independently-batched lanes has no defined semantics here.
         """
+        if plasticity and self.batch_size != 1:
+            raise ValueError("plasticity/training requires batch_size == 1")
+
         self.kc_mbon.set_dynamic_param_value("mod", 1 if plasticity else -1)
 
-        features = 0 if preprocessed_frame is None else extractFeatures(preprocessed_frame, self.params)
-        self.pn_input.vars["magnitude"].view[:] = features * self.params["INPUT_SCALE"]
-        self.pn_input.vars["magnitude"].push_to_device()
+        magnitude = self.pn_input.vars["magnitude"]
+        if self.batch_size == 1:
+            features = self._features_from(preprocessed_frame)
+            magnitude.view[:] = features * self.params["INPUT_SCALE"]
+            magnitude.push_to_device()
+        else:
+            items = preprocessed_frame if isinstance(preprocessed_frame, (list, tuple)) else [preprocessed_frame]
+            if len(items) > self.batch_size:
+                raise ValueError(f"got {len(items)} inputs, exceeds batch_size={self.batch_size}")
+            magnitude.view[:, :] = 0.0
+            for lane, item in enumerate(items):
+                magnitude.view[lane, :] = self._features_from(item) * self.params["INPUT_SCALE"]
+            magnitude.push_to_device()
 
         self.reset_network()
         simulation_steps = int(round(present_time_ms / self.params["DT"]))
-        self.logger.start_logging(simulation_steps)
-        for _ in range(simulation_steps):
-            self.logger.log_step(self.model.timestep)
-            self.model.step_time()
-        self.logger.finalize_logging()
+        if self.batch_size == 1:
+            self.logger.start_logging(simulation_steps)
+            for _ in range(simulation_steps):
+                self.logger.log_step(self.model.timestep)
+                self.model.step_time()
+            self.logger.finalize_logging()
+        else:
+            # NetworkLogger assumes unbatched spike_recording_data[0] shape
+            # and would silently read only lane 0 -- bypass it entirely here;
+            # test() reads every lane's spikes directly once step_time() is
+            # done (rich per-timestep logging isn't supported in batch mode).
+            for _ in range(simulation_steps):
+                self.model.step_time()
+            self.model.pull_recording_buffers_from_device()
+
+    # ── Feature cache (precompute_features=True) ────────────────────────────
+
+    def _build_feature_cache(self):
+        """
+        Precompute PN feature vectors (preprocessFrame + extractFeatures) for
+        every frame in trainingDatasetPath x the fixed (num_shifts+1) angular
+        shift grid (see NeuralModelBase._shift_degrees), once, so test()/
+        train() can skip that work at call time by passing frame_id.
+        """
+        num_frames = countFrames(self.params["trainingDatasetPath"])
+        self._cached_shift_degrees = self._shift_degrees()
+        self._feature_cache = np.zeros(
+            (num_frames, len(self._cached_shift_degrees), self.input_neurons), dtype=np.float32,
+        )
+        for frame_id in range(num_frames):
+            frame = loadFrame(frame_id, frames_dir=self.params["trainingDatasetPath"])
+            for shift_idx, shift in enumerate(self._cached_shift_degrees):
+                preprocessed = preprocessFrame(frame, shift, self.params)
+                self._feature_cache[frame_id, shift_idx, :] = extractFeatures(preprocessed, self.params)
+
+    def _lookup_cached_features(self, frame_id, shift_degree):
+        if self._feature_cache is None or frame_id is None:
+            return None
+        try:
+            shift_idx = self._cached_shift_degrees.index(shift_degree)
+        except ValueError:
+            return None
+        if not (0 <= frame_id < self._feature_cache.shape[0]):
+            return None
+        return self._feature_cache[frame_id, shift_idx, :]
 
     # ── Train / Test ─────────────────────────────────────────────────────────
 
     def train(self, frame, frame_id=None):
+        if self.batch_size != 1:
+            raise ValueError("train() requires batch_size == 1 (plasticity is not batched)")
         preprocessed = preprocessFrame(frame, 0, self.params)
         self.simulate(preprocessed, self.params["PRESENT_TIME_MS"], True)
         if self.logger._novelty_data["enabled"]:
             self.logger.log_training_frame(frame_id, frame, preprocessed)
 
-    def test(self, frame, shift_degree=0):
-        preprocessed = preprocessFrame(frame, shift_degree, self.params)
-        self.simulate(preprocessed, self.params["PRESENT_TIME_MS"], False)
-        return self.logger.get_spikes("mbon")["count"]
+    def test(self, frame, shift_degree=0, frame_id=None):
+        """
+        Test the network on one stimulus, or -- when batch_size > 1 and
+        `frame` is a list -- on up to batch_size stimuli at once (same
+        shift_degree for every lane, matching this project's validated
+        frame-batching strategy).
+
+        Args:
+            frame: a single raw frame, a list of up to batch_size raw frames,
+                or None (per-item) when precompute_features=True and the
+                matching frame_id is already cached -- callers relying on the
+                cache can skip loading/decoding the image entirely (this is
+                the whole point of precompute_features: avoid paying disk +
+                cv2 preprocessing cost again at test time).
+            shift_degree: angular shift applied to every frame in this call.
+            frame_id: optional frame index (or list, parallel to `frame`)
+                used to look up precomputed features when
+                precompute_features=True was passed to __init__; ignored
+                (falls back to on-the-fly preprocessing, which requires a
+                real `frame`) otherwise or on a cache miss.
+
+        Returns:
+            A single MBON spike count (int) if `frame` is a single frame, or
+            a list of counts (one per input) if `frame` is a list.
+        """
+        is_batch_call = isinstance(frame, (list, tuple))
+        frames_in = list(frame) if is_batch_call else [frame]
+        if is_batch_call and len(frames_in) > self.batch_size:
+            raise ValueError(f"got {len(frames_in)} frames, exceeds batch_size={self.batch_size}")
+        frame_ids_in = list(frame_id) if isinstance(frame_id, (list, tuple)) else [frame_id] * len(frames_in)
+        if len(frame_ids_in) != len(frames_in):
+            raise ValueError("frame_id list must match frame list length")
+
+        inputs = []
+        for f, fid in zip(frames_in, frame_ids_in):
+            cached = self._lookup_cached_features(fid, shift_degree) if self.precompute_features else None
+            if cached is not None:
+                inputs.append(cached)
+            elif f is not None:
+                inputs.append(preprocessFrame(f, shift_degree, self.params))
+            else:
+                raise ValueError(
+                    f"frame is None and no cached features for frame_id={fid} at shift={shift_degree} "
+                    "(precompute_features cache miss) -- pass a real frame"
+                )
+
+        self.simulate(inputs if is_batch_call else inputs[0], self.params["PRESENT_TIME_MS"], False)
+
+        if self.batch_size == 1:
+            return self.logger.get_spikes("mbon")["count"]
+
+        mbon_rec = self.mbon.spike_recording_data
+        counts = [len(mbon_rec[lane][0]) for lane in range(len(frames_in))]
+        return counts if is_batch_call else counts[0]
 
     # ── CSV export ───────────────────────────────────────────────────────────
 

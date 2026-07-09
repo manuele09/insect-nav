@@ -184,6 +184,60 @@ def run_reference(params_path: str, use_gpu: bool, frame_ids=None) -> dict:
     }
 
 
+def precompute_features(params_path: str, frame_ids=None) -> dict:
+    """
+    Precompute preprocessFrame + extractFeatures once for every (frame, shift)
+    pair, so that repeated benchmark runs can skip CPU-side image
+    preprocessing (cv2 crop/grayscale/shift/resize) entirely and read PN
+    feature vectors directly from memory instead. This is what let us
+    measure how much of a NeuralNetwork/variant's total wall time is CPU
+    preprocessing vs actual GPU simulation.
+
+    Returns a dict with:
+        frame_ids        (num_frames,)                       int64
+        shift_degrees     (num_shifts+1,)                     float64
+        features           (num_frames, num_shifts+1, num_pn)  float32 --
+                            NOT yet scaled by INPUT_SCALE (applied at
+                            consumption time, since it can be re-tuned)
+        elapsed_seconds    scalar float -- wall-clock time for this
+                            precompute pass alone.
+    """
+    from insect_nav.parameters import load_parameters_from_file
+    from insect_nav.vision import countFrames, extractFeatures, loadFrame, preprocessFrame
+
+    params = load_parameters_from_file(params_path)
+    num_shifts = params["NUM_SHIFTS"]
+    shift_degrees = _shift_degrees(params, num_shifts)
+
+    if frame_ids is None:
+        frame_ids = list(range(countFrames(params["trainingDatasetPath"])))
+    else:
+        frame_ids = list(frame_ids)
+
+    num_pn = 0
+    if params["USE_VERTICAL_DIST"]:
+        num_pn += params["WIDTH"]
+    if params["USE_HORIZONTAL_DIST"]:
+        num_pn += params["HEIGHT"]
+
+    features = np.zeros((len(frame_ids), len(shift_degrees), num_pn), dtype=np.float32)
+
+    start = time.time()
+    for i, frame_number in enumerate(frame_ids):
+        frame = loadFrame(frame_number, frames_dir=params["trainingDatasetPath"])
+        for j, shift in enumerate(shift_degrees):
+            preprocessed = preprocessFrame(frame, shift, params)
+            features[i, j, :] = extractFeatures(preprocessed, params)
+    elapsed = time.time() - start
+
+    return {
+        "frame_ids": np.array(frame_ids, dtype=np.int64),
+        "shift_degrees": np.array(shift_degrees, dtype=np.float64),
+        "features": features,
+        "elapsed_seconds": np.float64(elapsed),
+    }
+
+
 def save_run(path: str, **arrays) -> None:
     """Persist run arrays (e.g. the dict returned by run_reference) to `path` via np.savez."""
     np.savez(path, **arrays)

@@ -8,6 +8,14 @@ import numpy as np
 from tqdm import tqdm
 
 from insect_nav.parameters import save_parameters_to_file
+from insect_nav.plot_style import (
+    COLORS,
+    add_legend,
+    apply_style,
+    new_figure,
+    save_figure,
+    style_axes,
+)
 from insect_nav.vision import (
     countFrames,
     cropFrame,
@@ -19,6 +27,8 @@ from insect_nav.vision import (
     saveVerticalWeightingHeatmap,
     visualize_vertical_weighting,
 )
+
+apply_style()
 
 
 class NeuralModelBase:
@@ -95,30 +105,89 @@ class NeuralModelBase:
             print(f"Activated KCs: {novelties['total_unique_kcs']} / {self.params.get('NUM_KC', 'N/A')}")
             save_parameters_to_file(self.params, self.params["parameters_path"])
 
-    def testNavigation_batch(self, frame_ids=None):
+    def testNavigation_batch(self, frame_ids=None, debug_mode=True):
         if frame_ids is None:
             num_frames = countFrames(self.params["trainingDatasetPath"])
             train_step = self.params["train_step"]
             frame_ids = range(0, num_frames, train_step)
+        frame_ids = list(frame_ids)
+
+        if getattr(self, "batch_size", 1) <= 1:
+            cumulative_error = 0
+            for frame_number in frame_ids:
+                frame = loadFrame(frame_number, frames_dir=self.params["trainingDatasetPath"])
+                r = self.testNavigation(
+                    frame,
+                    frame_number=frame_number,
+                    log_path=self.params["plotsTestPath"],
+                    debug_print=False,
+                )
+                angle_rad = r[0] if isinstance(r, tuple) else r
+                cumulative_error += math.degrees(angle_rad)
+                self.plot_test_results(frame_number, self.params["plotsTestPath"])
+
+            cumulative_error /= len(frame_ids)
+            print(f"Cumulative error: {cumulative_error} degrees.")
+            return cumulative_error
+
+        # Batched path (self.batch_size > 1, NeuralNetwork only): shift as the
+        # sequential outer loop, chunks of batch_size frames as the inner
+        # loop, one self.test() call per chunk instead of one per (frame,
+        # shift) pair.
+        shift_degrees = self._shift_degrees()
+        num_frames = len(frame_ids)
+        novelty_matrix = [[None] * len(shift_degrees) for _ in range(num_frames)]
+
+        # With precompute_features=True, test() resolves every (frame_id,
+        # shift) pair straight from NeuralNetwork's in-memory cache -- skip
+        # loadFrame()/disk+cv2 entirely rather than reloading each frame 21
+        # times (once per shift) for no reason.
+        use_cache = getattr(self, "precompute_features", False)
+        for shift_idx, shift in enumerate(shift_degrees):
+            for chunk_start in range(0, num_frames, self.batch_size):
+                chunk_ids = frame_ids[chunk_start:chunk_start + self.batch_size]
+                if use_cache:
+                    chunk_frames = [None] * len(chunk_ids)
+                else:
+                    chunk_frames = [
+                        loadFrame(fid, frames_dir=self.params["trainingDatasetPath"]) for fid in chunk_ids
+                    ]
+                counts = self.test(chunk_frames, shift, frame_id=chunk_ids)
+                for i, count in enumerate(counts):
+                    novelty_matrix[chunk_start + i][shift_idx] = count
 
         cumulative_error = 0
-        for frame_number in frame_ids:
-            frame = loadFrame(frame_number, frames_dir=self.params["trainingDatasetPath"])
-            r = self.testNavigation(
-                frame,
-                frame_number=frame_number,
-                log_path=self.params["plotsTestPath"],
-                debug_print=False,
-            )
-            angle_rad = r[0] if isinstance(r, tuple) else r
+        for i, frame_number in enumerate(frame_ids):
+            self.degree_array = list(shift_degrees)
+            self.novelty_array = novelty_matrix[i]
+            best_degree, uncertainty = self.find_optimal_degree()
+            self.last_best_degree = best_degree
+            self._log_navigation_results(frame_number, best_degree, uncertainty, self.params["plotsTestPath"])
+            if debug_mode:
+                self.plot_test_results(frame_number, self.params["plotsTestPath"])
+            angle_rad = math.radians(-best_degree)
             cumulative_error += math.degrees(angle_rad)
-            self.plot_test_results(frame_number, self.params["plotsTestPath"])
 
-        cumulative_error /= len(frame_ids)
+        cumulative_error /= num_frames
         print(f"Cumulative error: {cumulative_error} degrees.")
         return cumulative_error
 
     # ── Navigation evaluation ────────────────────────────────────────────────
+
+    def _shift_degrees(self):
+        """
+        The (num_shifts+1) angular shift values scanned by testNavigation, in
+        order. Factored out of testNavigation's loop so other callers (e.g.
+        NeuralNetwork's batched testNavigation_batch and feature cache) reuse
+        the exact same formula instead of re-deriving it.
+        """
+        step = self.params["DEGREES_PER_SHIFT"]
+        shifts = []
+        for k in range(self.num_shifts + 1):
+            shift = (-self.num_shifts / 2 + k) * step
+            angle = (shift + 180) % 360 - 180
+            shifts.append(angle)
+        return shifts
 
     def testNavigation(self, frame, frame_number=-1, log_path=None, debug_print=True, return_timing=False):
         """
@@ -129,14 +198,13 @@ class NeuralModelBase:
         self.degree_array.clear()
         self.novelty_array.clear()
 
-        for k in range(self.num_shifts + 1):
-            shift = (-self.num_shifts / 2 + k) * self.params["DEGREES_PER_SHIFT"]
-            angle = (shift + 180) % 360 - 180
+        for angle in self._shift_degrees():
             novelty = self.test(frame, angle)
             self.degree_array.append(angle)
             self.novelty_array.append(novelty)
 
         best_degree, uncertainty = self.find_optimal_degree()
+        self.last_best_degree = best_degree
 
         if log_path:
             self._log_navigation_results(frame_number, best_degree, uncertainty, log_path)
@@ -213,20 +281,39 @@ class NeuralModelBase:
         saveFeaturesAsPNG(preprocessed, self.params,
                           output_dir=os.path.join(output_path, f"frame_{frame_number}"))
 
-    def plot_test_results(self, frame_number, output_path):
+    def plot_test_results(self, frame_number, output_path, optimal_degree=None):
+        """
+        Args:
+            optimal_degree: direzione "vera" (in gradi, stessa convenzione
+                dell'asse Shift Degree) verso cui il robot dovrebbe girare per
+                puntare alla traiettoria di training, calcolata dal chiamante
+                a partire da posa attuale + traiettoria (la rete non conosce
+                nessuna delle due). None (default) = nessuna riga di
+                riferimento disegnata (es. nessuna traiettoria di training
+                disponibile).
+        """
         frame_dir = os.path.join(output_path, f"frame_{frame_number}")
         os.makedirs(frame_dir, exist_ok=True)
 
-        plt.figure(figsize=(10, 5))
-        plt.scatter(self.degree_array, self.novelty_array, s=80, color="blue",
-                    edgecolor="black", linewidth=1.2)
-        plt.title(f"Frame {frame_number}", fontsize=20)
-        plt.xlabel("Shift Degree (°)", fontsize=16)
-        plt.ylabel("Novelty", fontsize=16)
-        plt.grid(True, linestyle="-", alpha=0.7)
-        plt.tight_layout()
-        plt.savefig(os.path.join(frame_dir, "novelty_plot.png"), dpi=300)
-        plt.close()
+        fig, ax = new_figure("error_vs_x")
+        ax.scatter(self.degree_array, self.novelty_array, s=80, color=COLORS["actual"],
+                   edgecolor="black", linewidth=1.2)
+
+        has_reference_lines = False
+        if hasattr(self, "last_best_degree"):
+            ax.axvline(self.last_best_degree, color="red", linestyle="--",
+                       linewidth=2, label=f"Scelta dalla rete ({self.last_best_degree:.1f}°)")
+            has_reference_lines = True
+        if optimal_degree is not None:
+            ax.axvline(optimal_degree, color="limegreen", linestyle="--",
+                       linewidth=2, label=f"Direzione ottimale ({optimal_degree:.1f}°)")
+            has_reference_lines = True
+
+        style_axes(ax, xlabel="Shift Degree (°)", ylabel="Novelty", title=f"Frame {frame_number}")
+        if has_reference_lines:
+            add_legend(ax)
+        save_figure(fig, os.path.join(frame_dir, "novelty_plot.png"))
+        plt.close(fig)
 
     # ── Logging ──────────────────────────────────────────────────────────────
 

@@ -11,9 +11,77 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+
+from insect_nav.plot_style import (
+    COLORS,
+    POPULATION_COLORS,
+    add_legend,
+    apply_style,
+    get_category_style,
+    new_figure,
+    save_figure,
+    style_axes,
+)
+
+apply_style()
+
+
+def _population_color(population: str) -> str:
+    """Colore fisso per popolazione neurale (PN/KC/APL/MBON), vedi guida §8.1.
+
+    Normalizza nomi di popolazione usati nei dati di logging (es. "apln")
+    alla chiave usata in POPULATION_COLORS ("APL").
+    """
+    key = population.upper()
+    if key == "APLN":
+        key = "APL"
+    return POPULATION_COLORS.get(key, COLORS["reference"])
+
+
+def _synapse_color(synapse: str) -> str:
+    """Colore per una sinapsi tra due popolazioni: usa il colore della
+    popolazione post-sinaptica (es. "kc_mbon" -> colore MBON)."""
+    post_population = synapse.split("_")[-1]
+    return _population_color(post_population)
+
+
+def _plot_dual_axis_novelty(x1, y1, x2, y2, *, ylabel1: str, ylabel2: str,
+                            legend1: str, legend2: str, color1: str, color2: str,
+                            title: str, xlabel: str = "Frame ID",
+                            plot_kind: str = "line", figsize_family: str = "error_vs_x",
+                            marker_size: float = 6.0):
+    """Helper privato di modulo per grafici a doppio asse Y (ax1/ax2 twinx)
+    condiviso da plot_cumulative_novelty/plot_instant_novelty (stesso pattern,
+    solo dati/etichette/colori/tipo di marker cambiano).
+    """
+    fig, ax1 = new_figure(figsize_family)
+    if plot_kind == "scatter":
+        h1 = ax1.scatter(x1, y1, marker="o", s=marker_size, color=color1, alpha=0.8, label=legend1)
+    else:
+        (h1,) = ax1.plot(x1, y1, color=color1, alpha=0.8, label=legend1)
+    ax1.set_xlabel(xlabel)
+    ax1.set_ylabel(ylabel1, color=color1)
+    ax1.tick_params(axis="y", labelcolor=color1)
+    style_axes(ax1, title=title)
+
+    ax2 = ax1.twinx()
+    if plot_kind == "scatter":
+        h2 = ax2.scatter(x2, y2, marker="o", s=marker_size, color=color2, alpha=0.8, label=legend2)
+    else:
+        (h2,) = ax2.plot(x2, y2, color=color2, alpha=0.8, label=legend2)
+    ax2.set_ylabel(ylabel2, color=color2)
+    ax2.tick_params(axis="y", labelcolor=color2)
+    ax2.grid(False)  # evita doppia griglia sovrapposta dalle due scale twinx
+
+    # Le due serie vivono su Axes diversi (twinx): add_legend() leggerebbe solo
+    # gli handle di ax1 e darebbe un falso warning "< 2 serie" pur ricevendo
+    # gli handle giusti via kwargs, quindi qui si applica lo stile della
+    # legenda manualmente invece di richiamare add_legend().
+    ax1.legend(handles=[h1, h2], loc="best", frameon=True, framealpha=0.9, edgecolor="0.3")
+    fig.tight_layout()
+    return fig, ax1, ax2
 
 
 class NetworkLogger:
@@ -507,62 +575,66 @@ class NetworkLogger:
     def plot_raster(self, population: str = "kc",
                     time_range: Optional[Tuple[float, float]] = None,
                     output_path=None, ax=None,
-                    color: str = "blue", marker_size: float = 1.0,
-                    alpha: float = 0.7, ylabel: str = "Neuron ID"):
+                    color: Optional[str] = None, marker_size: float = 1.0,
+                    alpha: float = 0.7, ylabel: str = "Neuron ID",
+                    title: Optional[str] = None):
         spike_data = self.get_spikes(population, time_range)
+        color = color or _population_color(population)
         if ax is None:
-            fig, ax = plt.subplots(figsize=(10, 4))
+            fig, ax = new_figure("error_vs_x")
         ax.scatter(spike_data["times"], spike_data["ids"], s=marker_size, color=color, alpha=alpha)
-        ax.set_xlabel("Time [ms]", fontsize=12)
-        ax.set_ylabel(ylabel, fontsize=12)
-        ax.set_title(f"{population.upper()} Spikes", fontsize=14)
-        ax.grid(True, linestyle="--", alpha=0.5)
+        style_axes(ax, xlabel="Time [ms]", ylabel=ylabel,
+                  title=title or f"{population.upper()} Spikes")
         ax.set_xlim((self._start_step * self._dt, self._end_step * self._dt))
         if output_path is not None:
-            plt.savefig(output_path, dpi=300, bbox_inches="tight")
-            plt.close()
+            save_figure(ax.figure, output_path)
+            plt.close(ax.figure)
         return ax
 
     def plot_voltage_traces(self, population: str = "mbon",
                             neuron_ids=None, time_range=None, output_path=None,
-                            ax=None, color: str = "blue", alpha: float = 0.7):
+                            ax=None, color: Optional[str] = None, alpha: float = 0.7,
+                            title: Optional[str] = None):
         v_data = self.get_voltages(population, time_range, neuron_ids)
+        color = color or _population_color(population)
         if ax is None:
-            fig, ax = plt.subplots(figsize=(10, 4))
-        for i in range(min(v_data["voltages"].shape[0], 5)):
+            fig, ax = new_figure("error_vs_x")
+        n_traces = min(v_data["voltages"].shape[0], 5)
+        for i in range(n_traces):
             ax.plot(v_data["time_axis"], v_data["voltages"][i, :], color=color, alpha=alpha,
                     label=f"Neuron {i}")
-        ax.set_xlabel("Time [ms]", fontsize=12)
-        ax.set_ylabel("Voltage [mV]", fontsize=12)
-        ax.set_title(f"{population.upper()} Membrane Potential", fontsize=14)
-        ax.grid(True, linestyle="--", alpha=0.5)
-        ax.legend()
+        style_axes(ax, xlabel="Time [ms]", ylabel="Voltage [mV]",
+                  title=title or f"{population.upper()} Membrane Potential")
+        if n_traces > 1:
+            add_legend(ax)
         if output_path is not None:
-            plt.savefig(output_path, dpi=300, bbox_inches="tight")
-            plt.close()
+            save_figure(ax.figure, output_path)
+            plt.close(ax.figure)
         return ax
 
     def plot_currents(self, synapse: str = "kc_mbon",
                       neuron_ids=None, time_range=None, output_path=None,
-                      ax=None, color: str = "red", alpha: float = 0.7):
+                      ax=None, color: Optional[str] = None, alpha: float = 0.7,
+                      title: Optional[str] = None):
         c_data = self.get_currents(synapse, time_range, neuron_ids)
+        color = color or _synapse_color(synapse)
         if ax is None:
-            fig, ax = plt.subplots(figsize=(10, 4))
-        for i in range(min(c_data["currents"].shape[0], 5)):
+            fig, ax = new_figure("error_vs_x")
+        n_traces = min(c_data["currents"].shape[0], 5)
+        for i in range(n_traces):
             ax.plot(c_data["time_axis"], c_data["currents"][i, :], color=color, alpha=alpha,
                     label=f"Neuron {i}")
-        ax.set_xlabel("Time [ms]", fontsize=12)
-        ax.set_ylabel("Current [a.u.]", fontsize=12)
-        ax.set_title(f"{synapse.upper()} Post-Synaptic Current", fontsize=14)
-        ax.grid(True, linestyle="--", alpha=0.5)
-        ax.legend()
+        style_axes(ax, xlabel="Time [ms]", ylabel="Current [a.u.]",
+                  title=title or f"{synapse.upper()} Post-Synaptic Current")
+        if n_traces > 1:
+            add_legend(ax)
         if output_path is not None:
-            plt.savefig(output_path, dpi=300, bbox_inches="tight")
-            plt.close()
+            save_figure(ax.figure, output_path)
+            plt.close(ax.figure)
         return ax
 
     def plot_cumulative_spike_count(self, population: str = "kc", output_path=None):
-        fig, ax = plt.subplots(1, 1, figsize=(10, 3))
+        fig, ax = new_figure("error_vs_x")
         data = self.get_spikes(population)
         t_start = self._start_step * self._dt
         t_end = self._end_step * self._dt
@@ -571,14 +643,13 @@ class NetworkLogger:
             cumulative_full = np.interp(times_full, data["times"], data["cumulative_spike_count"])
         else:
             cumulative_full = np.zeros_like(times_full)
-        ax.plot(times_full, cumulative_full)
-        ax.set_ylabel("Cumulative Spike Count", fontsize=12)
-        ax.set_title(f"{population.upper()} - Cumulative Spike Count")
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
+        ax.plot(times_full, cumulative_full, color=_population_color(population))
+        style_axes(ax, ylabel="Cumulative Spike Count",
+                  title=f"{population.upper()} - Cumulative Spike Count")
+        fig.tight_layout()
         if output_path is not None:
-            plt.savefig(output_path, dpi=300, bbox_inches="tight")
-            plt.close()
+            save_figure(fig, output_path)
+            plt.close(fig)
         return fig
 
     def plot_activity_summary(self, output_path: Union[str, Path],
@@ -595,72 +666,91 @@ class NetworkLogger:
         if hasattr(self._network, "mbon"):
             total_plots += self._network.NMBON
 
-        fig, axes = plt.subplots(total_plots, figsize=(12, 2.5 * total_plots), sharex=True)
+        fig, axes = new_figure("multi_vertical", nrows=total_plots)
+        if total_plots == 1:
+            axes = [axes]
 
-        self._plot_neuron_spikes(axes[0], self.get_spikes("pn")["times"],
-                                 self.get_spikes("pn")["ids"],
-                                 title="Projection Neurons (PN) Activity", color="blue", ylabel="PN ID")
-        self._save_individual_plot(axes[0], output_path / "pn_spike_activity.png")
+        # PN / KC rasters: disegnati direttamente con plot_raster (funzione
+        # "foglia" gia' esistente), sia sul pannello condiviso che sul file
+        # individuale, cosi' non serve piu' copiare gli artisti da una figura
+        # gia' renderizzata (vedi guida, consolidamento _save_individual_plot).
+        self.plot_raster("pn", ax=axes[0], color=POPULATION_COLORS["PN"], ylabel="PN ID",
+                         title="Projection Neurons (PN) Activity")
+        self.plot_raster("pn", output_path=output_path / "pn_spike_activity.png",
+                         color=POPULATION_COLORS["PN"], ylabel="PN ID",
+                         title="Projection Neurons (PN) Activity")
 
-        self._plot_neuron_spikes(axes[1], self.get_spikes("kc")["times"],
-                                 self.get_spikes("kc")["ids"],
-                                 title="Kenyon Cells (KC) Activity", color="green",
-                                 marker_size=2, ylabel="KC ID")
-        self._save_individual_plot(axes[1], output_path / "kc_spike_activity.png")
+        self.plot_raster("kc", ax=axes[1], color=POPULATION_COLORS["KC"], marker_size=2,
+                         ylabel="KC ID", title="Kenyon Cells (KC) Activity")
+        self.plot_raster("kc", output_path=output_path / "kc_spike_activity.png",
+                         color=POPULATION_COLORS["KC"], marker_size=2,
+                         ylabel="KC ID", title="Kenyon Cells (KC) Activity")
 
+        # KC cumulative spike count: NON delegato a plot_cumulative_spike_count
+        # perche' quest'ultimo usa un asse tempo assoluto (da _start_step),
+        # mentre qui l'asse e' relativo all'inizio del logging (da 0) -
+        # unificarli cambierebbe i dati mostrati, non solo lo stile.
         kc_spikes = self.get_spikes("kc")
         if len(kc_spikes["times"]) > 0:
             cumulative_full = np.interp(time_axis, kc_spikes["times"], kc_spikes["cumulative_spike_count"])
         else:
             cumulative_full = np.zeros_like(time_axis)
-        axes[2].plot(time_axis, cumulative_full, color="purple")
-        axes[2].set_ylabel("Cumulative Spike Count", fontsize=12)
-        axes[2].set_title("KC Cumulative Spike Count Over Time", fontsize=14)
-        axes[2].grid(True, linestyle="--", alpha=0.5)
+        axes[2].plot(time_axis, cumulative_full, color=POPULATION_COLORS["KC"])
+        style_axes(axes[2], ylabel="Cumulative Spike Count", title="KC Cumulative Spike Count Over Time")
         self._save_individual_plot(axes[2], output_path / "kc_active_count.png")
 
         apln_v = self.get_voltages("apln")["voltages"]
         if apln_v.size > 0:
-            axes[3].plot(time_axis, apln_v[0, :], color="orange")
-            axes[3].set_ylabel("Voltage [mV]", fontsize=12)
-            axes[3].set_title("APL Neuron Voltage", fontsize=14)
-            axes[3].grid(True, linestyle="--", alpha=0.5)
-            self._save_individual_plot(axes[3], output_path / "apln_voltage_trace.png")
+            self.plot_voltage_traces("apln", neuron_ids=[0], ax=axes[3],
+                                     color=POPULATION_COLORS["APL"], title="APL Neuron Voltage")
+            self.plot_voltage_traces("apln", neuron_ids=[0],
+                                     output_path=output_path / "apln_voltage_trace.png",
+                                     color=POPULATION_COLORS["APL"], title="APL Neuron Voltage")
 
+        # Pannello corrente KC->MBON: richiama plot_currents invece di
+        # reimplementare lo stesso disegno (consolidamento standalone/inline).
         c_data = self.get_currents("kc_mbon")
         if c_data["currents"].size > 0:
-            for i in range(min(c_data["currents"].shape[0], 5)):
-                axes[4].plot(time_axis, c_data["currents"][i, :], color="red", alpha=0.7)
-            axes[4].set_ylabel("Current [a.u.]", fontsize=12)
-            axes[4].set_title("KC→MBON Post-Synaptic Current", fontsize=14)
-            axes[4].grid(True, linestyle="--", alpha=0.5)
-        self._save_individual_plot(axes[4], output_path / "kc_mbon_currents.png")
+            self.plot_currents(synapse="kc_mbon", ax=axes[4], title="KC→MBON Post-Synaptic Current")
+        self.plot_currents(synapse="kc_mbon", output_path=output_path / "kc_mbon_currents.png",
+                           title="KC→MBON Post-Synaptic Current")
 
         if hasattr(self._network, "mbon"):
             mbon_v = self.get_voltages("mbon")["voltages"]
-            for i in range(self._network.NMBON):
+            n_mbon = self._network.NMBON
+            if n_mbon <= 1:
+                mbon_colors = [POPULATION_COLORS["MBON"]]
+            else:
+                # Il primo MBON resta col colore di popolazione fisso; gli
+                # altri usano la palette categoriale per restare distinguibili
+                # (guida §8.1: riusare "tertiary"/MBON per tutti li rende
+                # indistinguibili quando N > 1).
+                mbon_colors = [POPULATION_COLORS["MBON"]] + get_category_style(n_mbon - 1)[0]
+            for i in range(n_mbon):
                 if i + 5 < len(axes) and mbon_v.size > 0:
-                    axes[5 + i].plot(time_axis, mbon_v[i, :], color="red")
-                    axes[5 + i].set_ylabel("Voltage [mV]", fontsize=12)
-                    axes[5 + i].set_title(f"MBON {i} Voltage", fontsize=14)
-                    axes[5 + i].grid(True, linestyle="--", alpha=0.5)
-                    self._save_individual_plot(axes[5 + i], output_path / f"mbon_{i}_voltage_trace.png")
+                    self.plot_voltage_traces("mbon", neuron_ids=[i], ax=axes[5 + i],
+                                             color=mbon_colors[i], title=f"MBON {i} Voltage")
+                    self.plot_voltage_traces("mbon", neuron_ids=[i],
+                                             output_path=output_path / f"mbon_{i}_voltage_trace.png",
+                                             color=mbon_colors[i], title=f"MBON {i} Voltage")
 
-        plt.tight_layout()
-        plt.savefig(output_path / "combined_activity_plot.png", dpi=300)
+        fig.tight_layout()
+        save_figure(fig, output_path / "combined_activity_plot.png")
         plt.close(fig)
 
     def _plot_neuron_spikes(self, ax, spike_times, spike_ids, title="Spikes",
-                            color="blue", marker_size=1, alpha=0.7, ylabel="Neuron ID"):
+                            color=None, marker_size=1, alpha=0.7, ylabel="Neuron ID"):
+        color = color or COLORS["reference"]
         ax.scatter(spike_times, spike_ids, s=marker_size, color=color, alpha=alpha)
-        ax.set_xlabel("Time [ms]", fontsize=12)
-        ax.set_ylabel(ylabel, fontsize=12)
-        ax.set_title(title, fontsize=14)
-        ax.grid(True, linestyle="--", alpha=0.5)
+        style_axes(ax, xlabel="Time [ms]", ylabel=ylabel, title=title)
 
     def _save_individual_plot(self, ax, file_path):
-        fig = plt.figure(figsize=(10, 6))
-        new_ax = fig.add_subplot(111)
+        """Ricostruisce un pannello di ``plot_activity_summary`` come figura
+        individuale copiandone gli artisti. Usato solo per il pannello dello
+        spike count cumulativo KC, l'unico senza una funzione "foglia"
+        riutilizzabile direttamente (vedi nota in plot_activity_summary).
+        """
+        fig, new_ax = new_figure("error_vs_x")
         for line in ax.lines:
             new_ax.plot(line.get_xdata(), line.get_ydata(), color=line.get_color(),
                         linestyle=line.get_linestyle(), linewidth=line.get_linewidth(),
@@ -670,15 +760,13 @@ class NetworkLogger:
             if len(offsets) > 0:
                 new_ax.scatter(offsets[:, 0], offsets[:, 1],
                                c=coll.get_facecolor(), s=coll.get_sizes(), alpha=coll.get_alpha())
-        new_ax.set_title(ax.get_title(), fontsize=14)
-        new_ax.set_xlabel(ax.get_xlabel(), fontsize=12)
-        new_ax.set_ylabel(ax.get_ylabel(), fontsize=12)
-        if ax.get_legend():
-            new_ax.legend(loc="upper right")
-        new_ax.grid(True, linestyle="--", alpha=0.5)
+        style_axes(new_ax, xlabel=ax.get_xlabel(), ylabel=ax.get_ylabel(), title=ax.get_title())
+        handles, _ = new_ax.get_legend_handles_labels()
+        if ax.get_legend() and len(handles) > 1:
+            add_legend(new_ax, loc="upper right")
         new_ax.set_xlim((self._start_step * self._dt, self._end_step * self._dt))
         fig.tight_layout()
-        fig.savefig(file_path, dpi=300)
+        save_figure(fig, file_path)
         plt.close(fig)
 
     def plot_cumulative_novelty(self, output_path: Union[str, Path], metric: str = "cosine") -> None:
@@ -694,23 +782,16 @@ class NetworkLogger:
         corr_val = novelty_data["correlation_cumulative"][metric]
         corr_str = f"{corr_val:.3f}" if isinstance(corr_val, float) else corr_val
 
-        fig, ax1 = plt.subplots(figsize=(8, 6))
-        sc1 = ax1.scatter(frames, cum_novelty, marker="o", s=4, color="blue", alpha=0.8,
-                          label=f"Cumulative Novelty ({metric})")
-        ax1.set_title(f"Cumulative {metric.capitalize()} Novelty vs. Newly Fired KCs", fontsize=14)
-        ax1.set_xlabel("Frame ID", fontsize=12)
-        ax1.set_ylabel("Cumulative Novelty", fontsize=12, color="blue")
-        ax1.tick_params(axis="y", labelcolor="blue")
-        ax1.grid(True, linestyle="--", alpha=0.5)
-
-        ax2 = ax1.twinx()
-        sc2 = ax2.scatter(frames, cum_kcs, marker="o", s=4, color="red", alpha=0.8,
-                          label=f"Cumulative New KCs (corr={corr_str})")
-        ax2.set_ylabel("Cumulative Newly Fired KCs", fontsize=12, color="red")
-        ax2.tick_params(axis="y", labelcolor="red")
-        ax1.legend(handles=[sc1, sc2], loc="best", fontsize=10)
-        plt.tight_layout()
-        plt.savefig(output_path / f"combined_cumulative_novelty_{metric}.png", dpi=300)
+        fig, _, _ = _plot_dual_axis_novelty(
+            frames, cum_novelty, frames, cum_kcs,
+            ylabel1="Cumulative Novelty", ylabel2="Cumulative Newly Fired KCs",
+            legend1=f"Cumulative Novelty ({metric})",
+            legend2=f"Cumulative New KCs (corr={corr_str})",
+            color1=COLORS["reference"], color2=POPULATION_COLORS["KC"],
+            title=f"Cumulative {metric.capitalize()} Novelty vs. Newly Fired KCs",
+            plot_kind="scatter", figsize_family="scatter",
+        )
+        save_figure(fig, output_path / f"combined_cumulative_novelty_{metric}.png")
         plt.close(fig)
 
     def plot_instant_novelty(self, output_path: Union[str, Path], metric: str = "cosine") -> None:
@@ -729,20 +810,16 @@ class NetworkLogger:
         corr_val = novelty_data["correlation_per_frame"][metric]
         corr_str = f"{corr_val:.3f}" if isinstance(corr_val, float) else corr_val
 
-        fig, ax1 = plt.subplots(figsize=(10, 4))
-        (line1,) = ax1.plot(frames, novelty_vals, color="green", alpha=0.7, label=f"Novelty ({metric})")
-        ax1.set_xlabel("Frame ID", fontsize=12)
-        ax1.set_ylabel("Novelty Score", fontsize=12)
-        ax1.grid(True, linestyle="--", alpha=0.5)
-
-        ax2 = ax1.twinx()
-        (line2,) = ax2.plot(frames_for_rate, recruitment_rate, color="purple", alpha=0.7,
-                             label=f"KC recruitment rate (corr={corr_str})")
-        ax2.set_ylabel("New KCs Recruited", fontsize=12)
-        ax1.set_title(f"Per-Frame {metric.capitalize()} Novelty + KC Recruitment Rate", fontsize=14)
-        ax1.legend(handles=[line1, line2], loc="best", fontsize=10)
-        plt.tight_layout()
-        plt.savefig(output_path / f"novelty_and_kc_recruitment_{metric}.png", dpi=300)
+        fig, _, _ = _plot_dual_axis_novelty(
+            frames, novelty_vals, frames_for_rate, recruitment_rate,
+            ylabel1="Novelty Score", ylabel2="New KCs Recruited",
+            legend1=f"Novelty ({metric})",
+            legend2=f"KC recruitment rate (corr={corr_str})",
+            color1=COLORS["reference"], color2=POPULATION_COLORS["KC"],
+            title=f"Per-Frame {metric.capitalize()} Novelty + KC Recruitment Rate",
+            plot_kind="line", figsize_family="error_vs_x",
+        )
+        save_figure(fig, output_path / f"novelty_and_kc_recruitment_{metric}.png")
         plt.close(fig)
 
     def plot_all_novelty(self, output_path: Union[str, Path]) -> None:
