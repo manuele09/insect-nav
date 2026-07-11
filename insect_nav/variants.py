@@ -110,9 +110,12 @@ def apply_parameter_transformation(
         transformations: Dictionary of parameters to modify with their value lists
         output_base_dir: Directory where variants will be saved
         train_dataset_path: Optional override for training dataset path. If given,
-            also looks for a dataset.json manifest in its parent directory and, if
-            found, copies datasetJsonPath + panorama_method/total_distance_m/
-            acquisition_step_m/waypoints_csv/num_frames into the variant's parameters.
+            sets training_poses_csv (<train_dataset_path>/poses.csv, the trajectory
+            REALLY executed during acquisition — the single source of truth for
+            navigation-test comparisons/metrics), and also looks for a dataset.json
+            manifest in its parent directory and, if found, copies datasetJsonPath +
+            panorama_method/total_distance_m/acquisition_step_m/
+            waypoints_spline_csv/num_frames into the variant's parameters.
         copy_weights: Whether to copy weights from source network
 
     Returns:
@@ -173,6 +176,19 @@ def apply_parameter_transformation(
         if train_dataset_path:
             variant_params["trainingDatasetPath"] = train_dataset_path
 
+            # training_poses_csv: <trainingDatasetPath>/poses.csv, la
+            # traiettoria REALMENTE eseguita durante l'acquisizione (stesso
+            # file scritto da DatasetWriter.finalize in ciascuna leaf dir
+            # raw/panorama) — l'UNICA fonte di verita' per confronti/metriche
+            # di un test di navigazione (vedi
+            # control_navigator.resolve_training_poses_csv nel repo
+            # Visual-Navigation-Biorobotics). Nessun campo generico
+            # 'waypoints_csv' qui: quella era la spline IDEALE (o i waypoint
+            # grezzi), non la traiettoria eseguita, e confondere le due era
+            # fonte di bug (marker/plot di confronto contro la curva
+            # sbagliata).
+            variant_params["training_poses_csv"] = str(Path(train_dataset_path) / "poses.csv")
+
             # Cerca il manifest dataset.json nella cartella superiore (il
             # trainingDatasetPath punta tipicamente a una sottocartella
             # raw/panorama di un dataset acquisito e dataset.json vive nella
@@ -184,7 +200,7 @@ def apply_parameter_transformation(
                     dataset_manifest = json.load(f)
                 variant_params["datasetJsonPath"] = str(dataset_json_path.resolve())
                 for key in ("panorama_method", "total_distance_m", "acquisition_step_m",
-                            "waypoints_csv", "num_frames"):
+                            "waypoints_spline_csv", "num_frames"):
                     if key in dataset_manifest:
                         variant_params[key] = dataset_manifest[key]
 
