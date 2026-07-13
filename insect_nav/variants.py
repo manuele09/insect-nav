@@ -101,6 +101,7 @@ def apply_parameter_transformation(
     output_base_dir: str,
     train_dataset_path: Optional[str] = None,
     copy_weights: bool = True,
+    halve: bool = False,
 ) -> List[str]:
     """
     Apply parameter transformations to a base configuration and create variants.
@@ -117,6 +118,16 @@ def apply_parameter_transformation(
             panorama_method/total_distance_m/acquisition_step_m/
             waypoints_spline_csv/num_frames into the variant's parameters.
         copy_weights: Whether to copy weights from source network
+        halve: If True, sets "halve": True in every created variant's
+            parameters.json, switching NeuralNetwork.train() (spiking.py) to
+            the extended KC-MBON training procedure (also trains the +/-
+            DEGREES_PER_SHIFT presentations, halving instead of zeroing the
+            synapse on coincidence). Default False = key omitted entirely,
+            variants keep the classic training procedure unchanged. Also
+            appends "_halve" to the variant's generated name/folder (after
+            "_seed{N}" if present), same convention as seed -- the name is
+            characteristic of the parameters that shape training, and halve
+            is one of them.
 
     Returns:
         List of paths to newly created parameters.json files
@@ -139,6 +150,7 @@ def apply_parameter_transformation(
 
         seed = variant_params.get("seeds", -1)
         variant_name = f"{variant_name}_seed{seed}" if seed >= 1 else variant_name
+        variant_name = f"{variant_name}_halve" if halve else variant_name
 
         dest_dir = Path(output_base_dir) / variant_name
         os.makedirs(dest_dir, exist_ok=True)
@@ -156,6 +168,8 @@ def apply_parameter_transformation(
                 weights_info = "no pn_kc_ind.npy found"
 
         variant_params["name"] = variant_name
+        if halve:
+            variant_params["halve"] = True
         variant_params["parameters_path"] = str(dest_dir / "parameters.json")
         variant_params["weightsPath"] = str(dest_dir / "weights")
         variant_params["plotsTrainPath"] = str(dest_dir / "plots" / "training")

@@ -22,6 +22,7 @@ try:
         create_var_ref,
         create_out_post_var_ref,
         create_wu_pre_var_ref,
+        create_wu_var_ref,
         init_postsynaptic,
         init_sparse_connectivity,
         init_weight_update,
@@ -39,6 +40,7 @@ from insect_nav.genn_models import (
     reset_model_if,
     reset_model_lif,
     reset_model_syn,
+    reset_model_wu_var,
 )
 from insect_nav.logger import NetworkLogger
 from insect_nav.parameters import save_parameters_to_file
@@ -300,6 +302,12 @@ class NeuralNetwork(NeuralModelBase):
         self.synapse_populations_names = ["pn_kc", "kc_apln", "apln_kc"]
 
         if not self.reducedNetwork:
+            # Backward compat: parameters.json salvati prima dell'introduzione
+            # di halve_g hanno KC_MBON_PARAMS = {"mod": ...} soltanto -- il
+            # modello anti_hebbian ora richiede anche un valore iniziale per
+            # halve_g.
+            self.params["KC_MBON_PARAMS"].setdefault("halve_g", 0.0)
+
             kc_mbon_g_init = self.loaded_weights["kc_mbon"][0]
             if self.batch_size > 1 and np.ndim(kc_mbon_g_init) > 0:
                 # anti_hebbian's "g" var is READ_WRITE (default access mode
@@ -316,10 +324,11 @@ class NeuralNetwork(NeuralModelBase):
             self.kc_mbon = self.model.add_synapse_population(
                 "kc_mbon", "SPARSE", self.kc, self.mbon,
                 init_weight_update(anti_hebbian, self.params["KC_MBON_PARAMS"],
-                                   {"g": kc_mbon_g_init}),
+                                   {"g": kc_mbon_g_init, "halved": 0.0}),
                 init_postsynaptic("ExpCurr", {"tau": self.params["KC_MBON_TAU"]}),
             )
             self.kc_mbon.set_wu_param_dynamic("mod", True)
+            self.kc_mbon.set_wu_param_dynamic("halve_g", True)
             self.kc_mbon.set_sparse_connections(
                 np.arange(self.params["NUM_KC"]),
                 np.zeros(self.params["NUM_KC"]),
@@ -411,9 +420,32 @@ class NeuralNetwork(NeuralModelBase):
                 {"Isyn": create_out_post_var_ref(syn)}, {},
             )
 
+        if not self.reducedNetwork:
+            # anti_hebbian's "halved" guard (see genn_models.py) caps each
+            # synapse to at most one halving per FRAME, not per presentation:
+            # deliberately its own custom-update group ("RESET_HALVED"),
+            # separate from "RESET" (which reset_network() runs before every
+            # single presentation) -- otherwise a synapse touched by both the
+            # +step and -step flank presentations of the same frame (see
+            # train()) would be halved twice (quarter, not half). Cleared
+            # once per frame by _reset_halve_guard(), called from train()
+            # before its first (center) presentation.
+            self.model.add_custom_update(
+                "reset_kc_mbon_halved", "RESET_HALVED", reset_model_wu_var, {}, {},
+                {"var": create_wu_var_ref(self.kc_mbon, "halved")}, {},
+            )
+
     def reset_network(self):
         self.model.timestep = 0
         self.model.custom_update("RESET")
+
+    def _reset_halve_guard(self):
+        """Clear anti_hebbian's per-synapse "halved" guard once per frame (see
+        _create_reset_custom_update) -- called at the start of train(), not
+        per presentation, so it protects across a frame's center + flank
+        presentations without being touched by test()'s simulate() calls."""
+        if not self.reducedNetwork:
+            self.model.custom_update("RESET_HALVED")
 
     # ── Simulation ───────────────────────────────────────────────────────────
 
@@ -429,7 +461,7 @@ class NeuralNetwork(NeuralModelBase):
         arr = np.asarray(item)
         return arr if arr.ndim == 1 else extractFeatures(arr, self.params)
 
-    def simulate(self, preprocessed_frame, present_time_ms: float, plasticity: bool = False):
+    def simulate(self, preprocessed_frame, present_time_ms: float, plasticity: bool = False, halve: bool = False):
         """
         Run the network for one stimulus presentation (batch_size == 1), or
         for up to batch_size presentations at once (batch_size > 1).
@@ -443,11 +475,15 @@ class NeuralNetwork(NeuralModelBase):
             plasticity: Whether to enable KC→MBON weight modification.
                 Requires batch_size == 1 (see train()) -- plasticity across
                 independently-batched lanes has no defined semantics here.
+            halve: When plasticity=True, a coincident KC-MBON spike halves
+                the synapse's weight (g *= 0.5) instead of zeroing it
+                outright. Ignored when plasticity=False.
         """
         if plasticity and self.batch_size != 1:
             raise ValueError("plasticity/training requires batch_size == 1")
 
         self.kc_mbon.set_dynamic_param_value("mod", 1 if plasticity else -1)
+        self.kc_mbon.set_dynamic_param_value("halve_g", 1 if (plasticity and halve) else 0)
 
         magnitude = self.pn_input.vars["magnitude"]
         if self.batch_size == 1:
@@ -536,12 +572,34 @@ class NeuralNetwork(NeuralModelBase):
         return np.clip((v - v_rest) / denom, 0.0, 1.0)
 
     def train(self, frame, frame_id=None):
+        """
+        Classic procedure (default, self.params["halve"] assente/False): un
+        solo allenamento sul frame stesso, shift 0, coincidenza KC-MBON
+        azzera il peso (halve=False).
+
+        Procedura estesa (self.params["halve"] = True nel parameters.json):
+        oltre al frame stesso (come sopra, azzerato), allena anche le due
+        presentazioni ottenute shiftando il frame di +/-DEGREES_PER_SHIFT
+        (stesso meccanismo di shift usato da testNavigation/_shift_degrees),
+        dove la coincidenza KC-MBON dimezza il peso invece di azzerarlo --
+        i due heading vicini vengono trattati come "meno familiari" invece
+        che pienamente familiari. Il guard "halved" (vedi genn_models.py) e'
+        per FRAME, non per presentazione: una sinapsi toccata da entrambe le
+        presentazioni +/-step si dimezza una volta sola (non un quarto).
+        """
         if self.batch_size != 1:
             raise ValueError("train() requires batch_size == 1 (plasticity is not batched)")
+        self._reset_halve_guard()
         preprocessed = preprocessFrame(frame, 0, self.params)
-        self.simulate(preprocessed, self.params["PRESENT_TIME_MS"], True)
+        self.simulate(preprocessed, self.params["PRESENT_TIME_MS"], plasticity=True, halve=False)
         if self.logger._novelty_data["enabled"]:
             self.logger.log_training_frame(frame_id, frame, preprocessed)
+
+        if self.params.get("halve"):
+            step = self.params["DEGREES_PER_SHIFT"]
+            for shift in (step, -step):
+                shifted = preprocessFrame(frame, shift, self.params)
+                self.simulate(shifted, self.params["PRESENT_TIME_MS"], plasticity=True, halve=True)
 
     def test(self, frame, shift_degree=0, frame_id=None):
         """

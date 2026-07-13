@@ -148,6 +148,18 @@ nn.train_batch(frame_ids=None, plot_novelties=True)  # None = tutto trainingData
 
 `train()` richiede sempre `batch_size==1` (vedi sopra) — non serve/non ha senso passare `use_gpu=True` per allenare, dato che si processa un frame alla volta comunque.
 
+### Procedura di training estesa (`halve`)
+
+Di default, quando un KC e l'MBON sparano in coincidenza, il peso della sinapsi KC→MBON viene azzerato (`g = 0`). Impostando `"halve": true` in `parameters.json`, `train()` usa una procedura estesa: oltre al frame stesso (azzerato, come sempre), allena anche le due presentazioni ottenute shiftando il frame di `±DEGREES_PER_SHIFT` (stesso meccanismo di shift di `testNavigation`/`_shift_degrees`), dove la coincidenza KC→MBON **dimezza** il peso (`g *= 0.5`) invece di azzerarlo — i due heading immediatamente vicini al frame di training vengono trattati come "meno familiari" invece che pienamente familiari.
+
+```python
+params["halve"] = True   # assente/False = procedura classica, invariata
+nn = NeuralNetwork(params, load_net={"pn_kc": True, "kc_mbon": False})
+nn.train(frame, frame_id=frame_id)  # ora fa 3 presentazioni invece di 1
+```
+
+Nessuna modifica necessaria a `train_batch()`/`test_one_variant()`/`variants.py`: il parametro va letto una volta dal `parameters.json` della variante, `train()` si comporta di conseguenza per ogni frame.
+
 ## Testare un singolo frame (`test`, `testNavigation`)
 
 ```python

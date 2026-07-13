@@ -35,15 +35,26 @@ if_model = create_neuron_model(
 
 anti_hebbian = create_weight_update_model(
     "anti_hebbian",
-    params=["mod"],
-    vars=[("g", "scalar")],
+    params=["mod", "halve_g"],
+    # "halved" is a per-synapse guard: at most one depression event per
+    # presentation may halve g (prevents 0.5**N compounding when a KC and/or
+    # the MBON spike more than once within PRESENT_TIME_MS -- a coincident
+    # KC-MBON spike is otherwise detected once per spike, not once per
+    # presentation). Reset to 0 at the start of every presentation by the
+    # "reset_kc_mbon_halved" custom update (see NeuralNetwork._build_network).
+    # Irrelevant when halve_g<=0 (classic g=0 is idempotent, no guard needed).
+    vars=[("g", "scalar"), ("halved", "scalar")],
     pre_spike_syn_code="""
         addToPost(g);
         if (mod > 0)
         {
             const scalar dt = t - st_post;
             if (dt > 0 && dt < 100000) {
-                g = 0;
+                if (halve_g > 0) {
+                    if (halved < 1.0) { g *= 0.5; halved = 1.0; }
+                } else {
+                    g = 0;
+                }
             }
         }
     """,
@@ -52,7 +63,11 @@ anti_hebbian = create_weight_update_model(
         {
             const scalar dt = t - st_pre;
             if (dt > 0 && dt < 100000) {
-                g = 0;
+                if (halve_g > 0) {
+                    if (halved < 1.0) { g *= 0.5; halved = 1.0; }
+                } else {
+                    g = 0;
+                }
             }
         }
     """,
@@ -102,4 +117,10 @@ reset_model_syn = create_custom_update_model(
     "reset_syn",
     var_refs=[("Isyn", "scalar", VarAccessMode.READ_WRITE)],
     update_code="Isyn = 0.0f;",
+)
+
+reset_model_wu_var = create_custom_update_model(
+    "reset_wu_var",
+    var_refs=[("var", "scalar", VarAccessMode.READ_WRITE)],
+    update_code="var = 0.0f;",
 )

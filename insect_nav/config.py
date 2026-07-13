@@ -43,7 +43,7 @@ class NetworkConfig:
     LIF_INIT: Dict[str, Any] = field(default_factory=dict)
     IF_PARAMS: Dict[str, Any] = field(default_factory=dict)
     IF_INIT: Dict[str, Any] = field(default_factory=dict)
-    KC_MBON_PARAMS: Dict[str, Any] = field(default_factory=lambda: {"mod": -1.0})
+    KC_MBON_PARAMS: Dict[str, Any] = field(default_factory=lambda: {"mod": -1.0, "halve_g": 0.0})
 
     # ── Simulation ───────────────────────────────────────────────────────────
     DT: float = 1.0
@@ -59,6 +59,12 @@ class NetworkConfig:
 
     # ── Training ─────────────────────────────────────────────────────────────
     train_step: int = 1
+    # False (default) = procedura di training classica (ogni frame allenato
+    # una volta, coincidenza KC-MBON -> peso azzerato). True = procedura
+    # estesa (vedi NeuralNetwork.train): oltre al frame stesso (azzerato),
+    # allena anche le due presentazioni shiftate di +/-DEGREES_PER_SHIFT
+    # dimezzando il peso invece di azzerarlo.
+    halve: bool = False
 
     # ── Paths ────────────────────────────────────────────────────────────────
     weightsPath: str = "./weights"
