@@ -43,6 +43,22 @@ except ImportError:
 # farebbe collidere i nomi delle cartelle (stesso nome per varianti diverse).
 INTEGER_PARAMS = {"target_kcs", "PN_KC_FAN_IN", "train_step"}
 
+# Stesse abbreviazioni di insect_nav.tuning.utilities.vars_to_name, usate da
+# build_variant_name per comporre il suffisso di un nome "a base fissa"
+# (vedi apply_parameter_transformation, base_name). Un parametro sweepato ma
+# assente da questa mappa usa come abbreviazione l'ultimo segmento della sua
+# chiave puntata (es. "IF_PARAMS.Foo" -> "Foo"), cosi' non sparisce mai in
+# silenzio dal nome della variante.
+PARAM_ABBREVIATIONS = {
+    "target_kcs": "t",
+    "PN_KC_FAN_IN": "f",
+    "PN_KC_WEIGHT": "w",
+    "IF_PARAMS.Vthresh": "v",
+    "VERTICAL_WEIGHT": "ver",
+    "HORIZONTAL_WEIGHT": "hor",
+    "train_step": "ts",
+}
+
 
 def _set_nested(d: Dict[str, Any], dotted_key: str, value: Any) -> None:
     """Imposta d[a][b] = value a partire da una chiave puntata "a.b" (es. "IF_PARAMS.Vthresh")."""
@@ -53,6 +69,30 @@ def _set_nested(d: Dict[str, Any], dotted_key: str, value: Any) -> None:
             target[key] = {}
         target = target[key]
     target[keys[-1]] = value
+
+
+def _get_nested(d: Dict[str, Any], dotted_key: str) -> Any:
+    """Legge d[a][b] a partire da una chiave puntata "a.b" (inverso di _set_nested)."""
+    value = d
+    for key in dotted_key.split("."):
+        value = value[key]
+    return value
+
+
+def build_variant_name(base_name: str, variant_params: Dict[str, Any], swept_param_names: List[str]) -> str:
+    """Nome variante a base fissa: base_name + un suffisso per ciascun parametro
+    sweepato (nell'ordine in cui e' stato aggiunto al sweep), es. base_name
+    "base" con train_step sweepato -> "base_ts1", "base_ts2", ... "seeds" viene
+    sempre escluso: il seed di connettivita' viene gia' accodato a parte da
+    apply_parameter_transformation (_seedN), sia in modalita' automatica che
+    a base fissa."""
+    parts = [base_name]
+    for name in swept_param_names:
+        if name == "seeds":
+            continue
+        abbrev = PARAM_ABBREVIATIONS.get(name, name.split(".")[-1])
+        parts.append(f"{abbrev}{_get_nested(variant_params, name)}")
+    return "_".join(parts)
 
 
 def cast_sweep_value(param_name: str, raw: str):
@@ -102,6 +142,7 @@ def apply_parameter_transformation(
     train_dataset_path: Optional[str] = None,
     copy_weights: bool = True,
     halve: bool = False,
+    base_name: Optional[str] = None,
 ) -> List[str]:
     """
     Apply parameter transformations to a base configuration and create variants.
@@ -128,6 +169,11 @@ def apply_parameter_transformation(
             "_seed{N}" if present), same convention as seed -- the name is
             characteristic of the parameters that shape training, and halve
             is one of them.
+        base_name: If given, names each variant "base_name" + one suffix per
+            swept parameter (build_variant_name), e.g. base_name "base" with
+            train_step swept over 1,2,4 -> "base_ts1", "base_ts2", "base_ts4".
+            Default None = automatic naming (vars_to_name, encodes ALL of the
+            network's naming-scheme fields, swept or not), unchanged.
 
     Returns:
         List of paths to newly created parameters.json files
@@ -143,10 +189,14 @@ def apply_parameter_transformation(
     from insect_nav.tuning.utilities import params_dict_to_vars, vars_to_name
 
     created_paths = []
+    swept_param_names = list(transformations.keys())
 
     for variant_params in variants:
-        variant_vars = params_dict_to_vars(variant_params, network_type)
-        variant_name = vars_to_name(variant_vars, network_type)
+        if base_name:
+            variant_name = build_variant_name(base_name, variant_params, swept_param_names)
+        else:
+            variant_vars = params_dict_to_vars(variant_params, network_type)
+            variant_name = vars_to_name(variant_vars, network_type)
 
         seed = variant_params.get("seeds", -1)
         variant_name = f"{variant_name}_seed{seed}" if seed >= 1 else variant_name
