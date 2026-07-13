@@ -75,6 +75,23 @@ class NeuralNetwork(NeuralModelBase):
         self._feature_cache = None
         self._cached_shift_degrees = None
 
+        # Novelty output mode (opt-in via environment, read here so the
+        # downstream project needs no code change):
+        #   "spikes"         (default) -> per-shift novelty = MBON spike count
+        #                                  (small discrete integers, original
+        #                                  behaviour)
+        #   "spikes_voltage" -> novelty = spike_count + V_norm, where V_norm is
+        #                       the MBON's final membrane voltage normalized to
+        #                       [0,1] between rest (Vrest/Vreset) and threshold
+        #                       (Vthresh). This makes novelty CONTINUOUS, so it
+        #                       should be paired with a continuous
+        #                       INSECT_NAV_DEGREE_STRATEGY (e.g. strategy3).
+        self.novelty_mode = os.environ.get("INSECT_NAV_NOVELTY_MODE", "spikes").strip() or "spikes"
+        if self.novelty_mode not in ("spikes", "spikes_voltage"):
+            raise ValueError(
+                f"INSECT_NAV_NOVELTY_MODE must be 'spikes' or 'spikes_voltage', got {self.novelty_mode!r}"
+            )
+
         self.loaded_weights = {
             "pn_kc": None,
             "kc_mbon": {i: parameters["KC_MBON_WEIGHT"] for i in range(self.NMBON)},
@@ -496,6 +513,28 @@ class NeuralNetwork(NeuralModelBase):
 
     # ── Train / Test ─────────────────────────────────────────────────────────
 
+    def _mbon_voltage_norm(self):
+        """Final MBON membrane voltage (after the last simulated timestep),
+        normalized to [0, 1] between rest and threshold:
+
+            V_norm = clip((V_final - V_rest) / (V_thresh - V_rest), 0, 1)
+
+        V_rest is the built-in LIF's decay target ``Vrest`` (falls back to
+        ``Vreset``), V_thresh is ``Vthresh`` -- both from LIF_PARAMS. The value
+        is pulled straight off the device (cheaper than per-timestep voltage
+        logging); reset_network() runs at the START of each simulate(), so there
+        is no cross-shift leakage. Returns a 1-D array with one value per batch
+        lane (lane 0 first). NMBON == 1, so reshape(-1) yields exactly one entry
+        per lane.
+        """
+        self.mbon.vars["V"].pull_from_device()
+        v = np.asarray(self.mbon.vars["V"].values, dtype=np.float64).reshape(-1)
+        lif = self.params["LIF_PARAMS"]
+        v_rest = lif.get("Vrest", lif.get("Vreset", 0.0))
+        v_thresh = lif["Vthresh"]
+        denom = (v_thresh - v_rest) or 1.0
+        return np.clip((v - v_rest) / denom, 0.0, 1.0)
+
     def train(self, frame, frame_id=None):
         if self.batch_size != 1:
             raise ValueError("train() requires batch_size == 1 (plasticity is not batched)")
@@ -553,10 +592,16 @@ class NeuralNetwork(NeuralModelBase):
         self.simulate(inputs if is_batch_call else inputs[0], self.params["PRESENT_TIME_MS"], False)
 
         if self.batch_size == 1:
-            return self.logger.get_spikes("mbon")["count"]
+            count = self.logger.get_spikes("mbon")["count"]
+            if self.novelty_mode == "spikes_voltage" and hasattr(self, "mbon"):
+                count = count + float(self._mbon_voltage_norm()[0])
+            return count
 
         mbon_rec = self.mbon.spike_recording_data
         counts = [len(mbon_rec[lane][0]) for lane in range(len(frames_in))]
+        if self.novelty_mode == "spikes_voltage":
+            vnorm = self._mbon_voltage_norm()
+            counts = [c + float(vnorm[lane]) for lane, c in enumerate(counts)]
         return counts if is_batch_call else counts[0]
 
     # ── CSV export ───────────────────────────────────────────────────────────

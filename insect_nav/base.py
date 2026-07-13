@@ -49,6 +49,22 @@ class NeuralModelBase:
 
         self.degree_array = []
         self.novelty_array = []
+        # Optional pluggable override for find_optimal_degree(); a callable
+        # matching insect_nav.degree_strategies' shared contract:
+        # (degree_array, novelty_array, step, prev_degree) -> (optimal_degree, uncertainty).
+        # None (default) keeps the built-in grouping logic below unchanged.
+        self.degree_strategy = None
+
+        # Opt-in override via environment: INSECT_NAV_DEGREE_STRATEGY selects
+        # one of insect_nav/degree_strategies/ by name ("strategy3",
+        # "strategy3_parabolic_interp" or "3"). Read here (not in the caller)
+        # so the downstream project can switch strategies without any code
+        # change on its side. Unset => built-in find_optimal_degree unchanged.
+        _strategy_env = os.environ.get("INSECT_NAV_DEGREE_STRATEGY", "").strip()
+        if _strategy_env:
+            from insect_nav.degree_strategies import load_strategy
+            self.degree_strategy = load_strategy(_strategy_env)
+            print(f"[insect_nav] degree strategy override: {_strategy_env}")
 
         os.makedirs(self.params["plotsTrainPath"], exist_ok=True)
         os.makedirs(self.params["plotsTestPath"], exist_ok=True)
@@ -226,7 +242,17 @@ class NeuralModelBase:
 
         Groups minimum-novelty angles, selects the longest consecutive group
         (closest to 0° on ties), and returns the group mean with an uncertainty metric.
+
+        If self.degree_strategy is set, delegates to it instead (see
+        insect_nav/degree_strategies/ for drop-in alternatives benchmarked
+        against this default in insect_nav/tuning/degree_strategy_eval.py).
         """
+        if self.degree_strategy is not None:
+            prev_degree = getattr(self, "last_best_degree", None)
+            return self.degree_strategy(
+                self.degree_array, self.novelty_array, self.params["DEGREES_PER_SHIFT"], prev_degree,
+            )
+
         min_value = min(self.novelty_array)
         deg_min = [d for d, v in zip(self.degree_array, self.novelty_array) if v == min_value]
 
