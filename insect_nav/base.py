@@ -338,6 +338,13 @@ class NeuralModelBase:
         style_axes(ax, xlabel="Shift Degree (°)", ylabel="Novelty", title=f"Frame {frame_number}")
         if has_reference_lines:
             add_legend(ax)
+        # L'asse y si autoscala sui soli valori di novelty_array: forziamolo
+        # a includere sempre lo 0, cosi' i frame si possono confrontare a
+        # colpo d'occhio (senza, uno zoom automatico su un range lontano da
+        # zero farebbe sembrare "grandi" differenze di novelty che in realta'
+        # sono piccole).
+        ymin, ymax = ax.get_ylim()
+        ax.set_ylim(min(ymin, 0.0), max(ymax, 0.0))
         save_figure(fig, os.path.join(frame_dir, "novelty_plot.png"))
         plt.close(fig)
 
