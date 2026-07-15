@@ -176,7 +176,8 @@ class NeuralModelBase:
         for i, frame_number in enumerate(frame_ids):
             self.degree_array = list(shift_degrees)
             self.novelty_array = novelty_matrix[i]
-            best_degree, uncertainty = self.find_optimal_degree()
+            result = self.find_optimal_degree()
+            best_degree, uncertainty = result["angle"], result["uncertainty"]
             self.last_best_degree = best_degree
             self._log_navigation_results(frame_number, best_degree, uncertainty, self.params["plotsTestPath"])
             if debug_mode:
@@ -219,7 +220,8 @@ class NeuralModelBase:
             self.degree_array.append(angle)
             self.novelty_array.append(novelty)
 
-        best_degree, uncertainty = self.find_optimal_degree()
+        result = self.find_optimal_degree()
+        best_degree, uncertainty = result["angle"], result["uncertainty"]
         self.last_best_degree = best_degree
 
         if log_path:
@@ -246,12 +248,21 @@ class NeuralModelBase:
         If self.degree_strategy is set, delegates to it instead (see
         insect_nav/degree_strategies/ for drop-in alternatives benchmarked
         against this default in insect_nav/tuning/degree_strategy_eval.py).
+
+        Returns a dict with keys "angle" and "uncertainty" (always present),
+        plus "details": a dict of algorithm-specific extra values -- for the
+        built-in default, {"indecision_a": ..., "indecision_b": ...} (see
+        their definitions below); {} when delegating to a degree_strategy,
+        since those follow the shared (optimal_degree, uncertainty) contract
+        and have no standardized decomposition of their single uncertainty
+        value.
         """
         if self.degree_strategy is not None:
             prev_degree = getattr(self, "last_best_degree", None)
-            return self.degree_strategy(
+            optimal_degree, uncertainty = self.degree_strategy(
                 self.degree_array, self.novelty_array, self.params["DEGREES_PER_SHIFT"], prev_degree,
             )
+            return {"angle": optimal_degree, "uncertainty": uncertainty, "details": {}}
 
         min_value = min(self.novelty_array)
         deg_min = [d for d, v in zip(self.degree_array, self.novelty_array) if v == min_value]
@@ -275,7 +286,11 @@ class NeuralModelBase:
         indecision_b = (len(best_group) - 1) / len(self.degree_array)
         uncertainty = (indecision_a + indecision_b) / 2
 
-        return optimal_degree, uncertainty
+        return {
+            "angle": optimal_degree,
+            "uncertainty": uncertainty,
+            "details": {"indecision_a": indecision_a, "indecision_b": indecision_b},
+        }
 
     # ── Visualization ────────────────────────────────────────────────────────
 

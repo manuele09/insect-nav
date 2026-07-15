@@ -161,7 +161,8 @@ class ParallelNavigator(NeuralModelBase):
         self.novelty_array = [novelty for _, novelty in results]
 
         # Determine best navigation direction
-        best_degree, uncertainty = self.find_optimal_degree()
+        result = self.find_optimal_degree()
+        best_degree, uncertainty = result["angle"], result["uncertainty"]
         self.last_best_degree = best_degree
         elapsed_time = time.time() - start_time
 
