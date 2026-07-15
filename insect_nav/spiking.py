@@ -180,23 +180,56 @@ class NeuralNetwork(NeuralModelBase):
 
     def plot_weight_distribution(self, output_path) -> None:
         """
-        Plot a histogram of the current KC->MBON weights (g), pulled live from
-        the device, to visualize how training has redistributed them away
-        from the uniform KC_MBON_WEIGHT initial value (see
-        analyze_kc_mbon_connectivity). No-op for reducedNetwork (no kc_mbon
-        synapse). Saved as "kc_mbon_weight_distribution.png" under
-        output_path.
+        Plot the current KC->MBON weights (g), pulled live from the device, to
+        visualize how training has redistributed them away from the uniform
+        KC_MBON_WEIGHT initial value (see analyze_kc_mbon_connectivity). No-op
+        for reducedNetwork (no kc_mbon synapse). Saved as
+        "kc_mbon_weight_distribution.png" under output_path.
+
+        One vertical line (stem) per exact unique weight value (via
+        np.unique), not a fixed-bin-count histogram: anti_hebbian training
+        only ever zeroes or halves g (see genn_models.py), so the population
+        collapses onto a handful of discrete levels that can sit very close
+        together (e.g. after repeated halving) -- a fixed bin width could
+        merge distinct levels into one bin or split a single level across
+        two, either way misrepresenting the actual distribution. Stems
+        (rather than bars) render correctly under the symlog x-axis below
+        regardless of how compressed a region of the axis is, since their
+        width is defined in points, not data coordinates.
+
+        Both axes are always log-scaled (not opt-in): y is plain log (counts
+        are always >= 1, one per unique value) since a few dominant levels
+        (e.g. mostly-untouched or mostly-zeroed weights) would otherwise
+        hide minority levels on a linear count axis; x is symlog (linear
+        within +/-linthresh, log beyond it) rather than plain log because
+        classic anti-Hebbian depression zeroes g exactly, and log(0) is
+        undefined -- symlog is the only scale option that keeps that zero
+        level visible while still spreading out the geometrically-spaced
+        halved levels (0.5, 0.25, 0.125x the initial weight, ...) that would
+        otherwise crowd together near the origin on a linear axis.
         """
         if self.reducedNetwork:
             return
         self.kc_mbon.vars["g"].pull_from_device()
         weights = self.kc_mbon.vars["g"].values
         initial_weight = self.params["KC_MBON_WEIGHT"]
-        num_unique = len(np.unique(weights))
+        unique_values, counts = np.unique(weights, return_counts=True)
+        num_unique = len(unique_values)
+
+        positive_values = unique_values[unique_values > 0]
+        linthresh = positive_values.min() / 2 if len(positive_values) else max(initial_weight, 1.0) / 1000
 
         fig, ax = new_figure("error_vs_x")
-        ax.hist(weights, bins=50, color=POPULATION_COLORS["MBON"],
-                edgecolor="white", linewidth=0.5)
+        ax.vlines(unique_values, 0, counts, color=POPULATION_COLORS["MBON"], linewidth=2.5)
+        ax.set_xscale("symlog", linthresh=linthresh)
+        ax.set_yscale("log")
+        # Explicit bottom: autoscale on a log y-axis anchors to the plotted
+        # segments' *positive* extent, which can round up well above the
+        # smallest counts (each vline's lower endpoint sits at 0, invalid on
+        # a log axis and so ignored) -- left on auto, minority levels with a
+        # low count silently fall below the visible range. Every count is a
+        # bin population, so >= 1; 0.5 keeps all of them on-screen.
+        ax.set_ylim(bottom=0.5)
         ax.axvline(initial_weight, color=COLORS["reference"], linestyle="--",
                     label=f"Initial weight ({initial_weight:.3g})")
         # Proxy handle (no visible marker/line): only way to surface a plain
