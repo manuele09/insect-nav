@@ -20,7 +20,7 @@ class PerfectMemory(NeuralModelBase):
 
     # ── Training ─────────────────────────────────────────────────────────────
 
-    def train(self, frame):
+    def train(self, frame, is_last_frame=False):
         self.training_views.append(self.input_pipeline(frame, 0))
 
     # ── Weight persistence ───────────────────────────────────────────────────

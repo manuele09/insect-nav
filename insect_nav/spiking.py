@@ -15,6 +15,7 @@ import numpy as np
 from tqdm import tqdm
 
 matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 try:
     from pygenn import (
@@ -44,6 +45,14 @@ from insect_nav.genn_models import (
 )
 from insect_nav.logger import NetworkLogger
 from insect_nav.parameters import save_parameters_to_file
+from insect_nav.plot_style import (
+    COLORS,
+    POPULATION_COLORS,
+    add_legend,
+    new_figure,
+    save_figure,
+    style_axes,
+)
 from insect_nav.vision import countFrames, extractFeatures, loadFrame, preprocessFrame
 
 
@@ -168,6 +177,33 @@ class NeuralNetwork(NeuralModelBase):
             "fraction_unchanged": fraction_unchanged,
             "is_trained": fraction_unchanged < 1.0,
         }
+
+    def plot_weight_distribution(self, output_path) -> None:
+        """
+        Plot a histogram of the current KC->MBON weights (g), pulled live from
+        the device, to visualize how training has redistributed them away
+        from the uniform KC_MBON_WEIGHT initial value (see
+        analyze_kc_mbon_connectivity). No-op for reducedNetwork (no kc_mbon
+        synapse). Saved as "kc_mbon_weight_distribution.png" under
+        output_path.
+        """
+        if self.reducedNetwork:
+            return
+        self.kc_mbon.vars["g"].pull_from_device()
+        weights = self.kc_mbon.vars["g"].values
+        initial_weight = self.params["KC_MBON_WEIGHT"]
+
+        fig, ax = new_figure("error_vs_x")
+        ax.hist(weights, bins=50, color=POPULATION_COLORS["MBON"],
+                edgecolor="white", linewidth=0.5)
+        ax.axvline(initial_weight, color=COLORS["reference"], linestyle="--",
+                    label=f"Initial weight ({initial_weight:.3g})")
+        style_axes(ax, xlabel="KC→MBON weight (g)", ylabel="Count",
+                   title="KC→MBON Weight Distribution")
+        add_legend(ax)
+        fig.tight_layout()
+        save_figure(fig, os.path.join(output_path, "kc_mbon_weight_distribution.png"))
+        plt.close(fig)
 
     def _generate_pn_kc_connectivity(self, num_pn: int, num_kc: int, fan_in: int):
         """
@@ -571,7 +607,21 @@ class NeuralNetwork(NeuralModelBase):
         denom = (v_thresh - v_rest) or 1.0
         return np.clip((v - v_rest) / denom, 0.0, 1.0)
 
-    def train(self, frame, frame_id=None):
+    def _train_target_shift_degrees(self):
+        """
+        Fixed 40-point, 9deg-step grid covering the full 360deg circle, used
+        only by the opt-in "train_target" full-circle last-frame training
+        (see train()): origin (0deg) + 20 shifts to the right (9deg..180deg)
+        + 19 shifts to the left (-9deg..-171deg) = 40 distinct angles, no
+        repeats (-180deg and +180deg are the same heading, so only +180deg is
+        included). Deliberately independent of self.num_shifts/
+        DEGREES_PER_SHIFT (which configure the testNavigation scan window,
+        typically much narrower than 360deg) -- this sweep always covers the
+        whole circle regardless of that configuration.
+        """
+        return [k * 9.0 for k in range(-19, 21)]
+
+    def train(self, frame, frame_id=None, is_last_frame=False):
         """
         Classic procedure (default, self.params["halve"] assente/False): un
         solo allenamento sul frame stesso, shift 0, coincidenza KC-MBON
@@ -586,10 +636,32 @@ class NeuralNetwork(NeuralModelBase):
         che pienamente familiari. Il guard "halved" (vedi genn_models.py) e'
         per FRAME, non per presentazione: una sinapsi toccata da entrambe le
         presentazioni +/-step si dimezza una volta sola (non un quarto).
+
+        Procedura "target" (opt-in, self.params["train_target"] = True nel
+        parameters.json, attiva SOLO quando is_last_frame=True): sostituisce
+        interamente la procedura classica (niente presentazione centrale
+        separata, niente halve) con un allenamento a 360 gradi dell'ultimo
+        frame, su 40 shift distinti (vedi _train_target_shift_degrees()),
+        ognuno dei quali azzera il peso in coincidenza (halve=False) come la
+        presentazione centrale classica. Pensata per rendere l'ultimo frame
+        (tipicamente il goal/target di una traiettoria) familiare a tutti gli
+        heading, non solo a quello di training.
         """
         if self.batch_size != 1:
             raise ValueError("train() requires batch_size == 1 (plasticity is not batched)")
         self._reset_halve_guard()
+
+        if is_last_frame and self.params.get("train_target"):
+            preprocessed_center = None
+            for shift in self._train_target_shift_degrees():
+                preprocessed = preprocessFrame(frame, shift, self.params)
+                if shift == 0:
+                    preprocessed_center = preprocessed
+                self.simulate(preprocessed, self.params["PRESENT_TIME_MS"], plasticity=True, halve=False)
+            if self.logger._novelty_data["enabled"]:
+                self.logger.log_training_frame(frame_id, frame, preprocessed_center)
+            return
+
         preprocessed = preprocessFrame(frame, 0, self.params)
         self.simulate(preprocessed, self.params["PRESENT_TIME_MS"], plasticity=True, halve=False)
         if self.logger._novelty_data["enabled"]:

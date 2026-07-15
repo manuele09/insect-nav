@@ -168,7 +168,7 @@ class ParallelNavigator(NeuralModelBase):
 
         # Optional logging
         if log_path:
-            self._log_navigation_results(frame_number, best_degree, uncertainty, log_path)
+            self._log_navigation_results(frame_number, best_degree, uncertainty, log_path, result["details"])
 
         if debug_print:
             print(f"[Main] Best Degree: {best_degree:.2f}°, Uncertainty: {uncertainty:.4f}, Time: {elapsed_time*1000:.3f} ms")

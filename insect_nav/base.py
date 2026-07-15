@@ -86,7 +86,7 @@ class NeuralModelBase:
 
     # ── Abstract stubs ───────────────────────────────────────────────────────
 
-    def train(self, frame):
+    def train(self, frame, is_last_frame=False):
         pass
 
     def test(self, frame, shift_degree=0):
@@ -107,15 +107,17 @@ class NeuralModelBase:
             num_frames = countFrames(self.params["trainingDatasetPath"])
             train_step = self.params["train_step"]
             frame_ids = range(0, num_frames, train_step)
+        frame_ids = list(frame_ids)
 
-        for frame_number in tqdm(frame_ids, desc="Training"):
+        for i, frame_number in enumerate(tqdm(frame_ids, desc="Training")):
             frame = loadFrame(frame_number, frames_dir=self.params["trainingDatasetPath"])
-            self.train(frame)
+            self.train(frame, is_last_frame=(i == len(frame_ids) - 1))
 
         self.save_weights()
         if network_type == "spiking":
             if plot_novelties:
                 self.logger.plot_cumulative_novelty(self.params["plotsTrainPath"])
+                self.plot_weight_distribution(self.params["plotsTrainPath"])
             novelties = self.logger.get_novelties()
             self.params["activated_kcs"] = novelties["total_unique_kcs"]
             print(f"Activated KCs: {novelties['total_unique_kcs']} / {self.params.get('NUM_KC', 'N/A')}")
@@ -179,7 +181,9 @@ class NeuralModelBase:
             result = self.find_optimal_degree()
             best_degree, uncertainty = result["angle"], result["uncertainty"]
             self.last_best_degree = best_degree
-            self._log_navigation_results(frame_number, best_degree, uncertainty, self.params["plotsTestPath"])
+            self._log_navigation_results(
+                frame_number, best_degree, uncertainty, self.params["plotsTestPath"], result["details"],
+            )
             if debug_mode:
                 self.plot_test_results(frame_number, self.params["plotsTestPath"])
             angle_rad = math.radians(-best_degree)
@@ -225,7 +229,7 @@ class NeuralModelBase:
         self.last_best_degree = best_degree
 
         if log_path:
-            self._log_navigation_results(frame_number, best_degree, uncertainty, log_path)
+            self._log_navigation_results(frame_number, best_degree, uncertainty, log_path, result["details"])
 
         elapsed = time.time() - start_time
         if debug_print:
@@ -251,11 +255,11 @@ class NeuralModelBase:
 
         Returns a dict with keys "angle" and "uncertainty" (always present),
         plus "details": a dict of algorithm-specific extra values -- for the
-        built-in default, {"indecision_a": ..., "indecision_b": ...} (see
-        their definitions below); {} when delegating to a degree_strategy,
-        since those follow the shared (optimal_degree, uncertainty) contract
-        and have no standardized decomposition of their single uncertainty
-        value.
+        built-in default, {"indecision_a": ..., "indecision_b": ...,
+        "indecision_c": ...} (see their definitions below); {} when
+        delegating to a degree_strategy, since those follow the shared
+        (optimal_degree, uncertainty) contract and have no standardized
+        decomposition of their single uncertainty value.
         """
         if self.degree_strategy is not None:
             prev_degree = getattr(self, "last_best_degree", None)
@@ -284,12 +288,23 @@ class NeuralModelBase:
         optimal_degree = float(np.mean(best_group))
         indecision_a = 1 - len(best_group) / len(deg_min)
         indecision_b = (len(best_group) - 1) / len(self.degree_array)
+        # Spread of ALL raw minima (deg_min, not just the winning consecutive
+        # group) over the full scan: 0 if a single angle hits the minimum
+        # novelty, grows with how many angles overall are tied for the
+        # minimum -- unlike indecision_b, this does not require those angles
+        # to be contiguous, so it also picks up on the minimum being
+        # fragmented across several separate groups.
+        indecision_c = (len(deg_min) - 1) / len(self.degree_array)
         uncertainty = (indecision_a + indecision_b) / 2
 
         return {
             "angle": optimal_degree,
             "uncertainty": uncertainty,
-            "details": {"indecision_a": indecision_a, "indecision_b": indecision_b},
+            "details": {
+                "indecision_a": indecision_a,
+                "indecision_b": indecision_b,
+                "indecision_c": indecision_c,
+            },
         }
 
     # ── Visualization ────────────────────────────────────────────────────────
@@ -365,14 +380,29 @@ class NeuralModelBase:
 
     # ── Logging ──────────────────────────────────────────────────────────────
 
-    def _log_navigation_results(self, frame_number, best_degree, uncertainty, log_path):
+    def _log_navigation_results(self, frame_number, best_degree, uncertainty, log_path, details=None):
+        """
+        details: the "details" dict from find_optimal_degree() (e.g.
+            {"indecision_a":, "indecision_b":, "indecision_c":} for the
+            built-in algorithm, {} when delegating to a degree_strategy).
+            None (default, for any external caller still on the old
+            3-positional-arg signature) is treated as {} -- no extra
+            columns, same CSV shape as before this parameter existed.
+            Column set is derived from this dict's keys and, like the
+            degree_* columns below, assumed stable for the lifetime of one
+            test_log.csv (self.degree_strategy is fixed at construction, so
+            all rows in a given run come from the same branch of
+            find_optimal_degree and thus carry the same detail keys).
+        """
+        details = details or {}
         os.makedirs(log_path, exist_ok=True)
         csv_path = os.path.join(log_path, "test_log.csv")
         file_exists = os.path.isfile(csv_path)
 
-        header = ["frame_number", "best_degree", "uncertainty"] + \
+        detail_keys = list(details.keys())
+        header = ["frame_number", "best_degree", "uncertainty"] + detail_keys + \
                  [f"degree_{int(d)}" for d in self.degree_array]
-        row = [frame_number, best_degree, uncertainty] + self.novelty_array
+        row = [frame_number, best_degree, uncertainty] + [details[k] for k in detail_keys] + self.novelty_array
 
         with open(csv_path, "a" if file_exists else "w", newline="") as f:
             writer = csv.writer(f)

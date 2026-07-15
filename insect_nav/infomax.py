@@ -60,7 +60,7 @@ class Infomax(NeuralModelBase):
 
     # ── Training and testing ─────────────────────────────────────────────────
 
-    def train(self, frame):
+    def train(self, frame, is_last_frame=False):
         s = self.input_pipeline(frame, 0)
         h = self.weights @ s
         y = np.tanh(h)
