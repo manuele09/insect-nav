@@ -192,12 +192,16 @@ class NeuralNetwork(NeuralModelBase):
         self.kc_mbon.vars["g"].pull_from_device()
         weights = self.kc_mbon.vars["g"].values
         initial_weight = self.params["KC_MBON_WEIGHT"]
+        num_unique = len(np.unique(weights))
 
         fig, ax = new_figure("error_vs_x")
         ax.hist(weights, bins=50, color=POPULATION_COLORS["MBON"],
                 edgecolor="white", linewidth=0.5)
         ax.axvline(initial_weight, color=COLORS["reference"], linestyle="--",
                     label=f"Initial weight ({initial_weight:.3g})")
+        # Proxy handle (no visible marker/line): only way to surface a plain
+        # count in the legend without a second plotted series.
+        ax.plot([], [], linestyle="none", label=f"Unique weights: {num_unique}")
         style_axes(ax, xlabel="KC→MBON weight (g)", ylabel="Count",
                    title="KC→MBON Weight Distribution")
         add_legend(ax)
